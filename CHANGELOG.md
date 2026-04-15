@@ -1,5 +1,13 @@
 # Secure Container — Changelog
 
+## v1.0.2
+
+### Bug Fixes
+- **Secure Case texture** — updated to darker, more tactical appearance
+- **Secure Case world rotation** — corrected rotation when dropped or spawned in the world
+
+---
+
 ## v1.0.1
 
 ### Bug Fixes

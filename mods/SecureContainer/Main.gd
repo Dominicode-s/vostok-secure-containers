@@ -45,7 +45,8 @@ const TIERS: Dictionary = {
 		"civilian": false, "industrial": false, "military": true,
 		"icon": "secure.png",
 		"obj":  "secure_case.obj",
-		"texture": "secure_case_tex.png",
+		"texture": "secure_case_tex.jpg",
+		"mesh_rot": Vector3(0, 90, 0),   # correct for Blender export rotation
 		"size":  Vector3(0.13, 0.12, 0.25),
 	},
 }
@@ -1145,6 +1146,14 @@ func _build_pickup_tscn(file_id: String, mesh_path: String, custom_mesh: bool) -
 	lines.append('collision = NodePath("Collision")')
 	lines.append('')
 	lines.append('[node name="Mesh" type="MeshInstance3D" parent="."]')
+	if t.has("mesh_rot"):
+		var r: Vector3 = t.mesh_rot
+		var b: Basis = Basis.from_euler(Vector3(deg_to_rad(r.x), deg_to_rad(r.y), deg_to_rad(r.z)))
+		lines.append('transform = Transform3D(%f, %f, %f, %f, %f, %f, %f, %f, %f, 0, 0, 0)' % [
+			b.x.x, b.x.y, b.x.z,
+			b.y.x, b.y.y, b.y.z,
+			b.z.x, b.z.y, b.z.z,
+		])
 	lines.append('layers = 4')
 	lines.append('visibility_range_end = 25.0')
 	lines.append('cast_shadow = 0')
