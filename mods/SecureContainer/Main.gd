@@ -75,11 +75,12 @@ var _in_transition: bool = false  # true after scene change until pouch confirme
 # Runtime container state
 var _equipped_file: String = ""          # Which tier is equipped ("" = none)
 var _contents: Array = []               # Array of SlotData or null per slot
+var _pending_equip_tier: String = ""    # Tier to re-equip after respawn
 
 # ── Config Helper ────────────────────────────────────────────────────────────
 
 func _cfg() -> Node:
-	return get_node_or_null("/root/SecureContainerConfig")
+	return Engine.get_meta("SecureContainerConfig", null)
 
 func _slot_count(tier_file: String) -> int:
 	var cfg: Node = _cfg()
@@ -340,7 +341,7 @@ func _input(event: InputEvent) -> void:
 	var open_btn: int = cfg.open_button if cfg else MOUSE_BUTTON_MIDDLE
 	var open_btn_type: String = cfg.open_button_type if cfg else "MouseButton"
 	var is_open_press: bool = mbe.pressed and _equipped_file != "" \
-		and ((open_btn_type == "MouseButton" and mbe.button_index == open_btn) \
+		and ((open_btn_type in ["Mouse", "MouseButton"] and mbe.button_index == open_btn) \
 		or   (open_btn_type == "Key" and false))  # key handled in _input via InputEventKey
 	if is_open_press:
 		if _pouch_slot and is_instance_valid(_pouch_slot):
@@ -443,6 +444,28 @@ func _inject_pouch_slot(iface: Node) -> void:
 	_slot_injected = true
 	print("[SecureContainer] Pouch slot injected into equipment panel")
 
+	if _pending_equip_tier != "":
+		call_deferred("_reequip_after_respawn", iface)
+
+func _reequip_after_respawn(iface: Node) -> void:
+	if _pending_equip_tier == "" or _pending_equip_tier not in _item_data:
+		return
+	if not _pouch_slot or not is_instance_valid(_pouch_slot) or not _pouch_slot.is_inside_tree():
+		return
+	if _pouch_slot.get_child_count() > 0:
+		_pending_equip_tier = ""
+		return
+	var tier: String = _pending_equip_tier
+	_pending_equip_tier = ""
+	var container_sd: SlotData = SlotData.new()
+	container_sd.itemData = _item_data[tier]
+	container_sd.amount = 1
+	var new_item: Node = iface.item.instantiate()
+	iface.add_child(new_item)
+	new_item.Initialize(iface, container_sd)
+	iface.Equip(new_item, _pouch_slot)
+	print("[SecureContainer] Re-equipped %s into Pouch slot after respawn" % tier)
+
 func _find_equipment_panel(iface: Node) -> Node:
 	# Equipment is a direct child of Interface (not under Inventory)
 	for path: String in ["Equipment", "Inventory/Equipment"]:
@@ -483,6 +506,11 @@ func _poll_equipped_state(iface: Node) -> void:
 			call_deferred("_inject_secure_panel", iface, found_file)
 		return
 
+	# If the slot just became empty while the player is mid-drag, hold off —
+	# don't update _equipped_file yet so we re-detect the change next frame.
+	if found_file == "" and iface.get("itemDragged") != null:
+		return
+
 	# Tier changed — full reset
 	_equipped_file = found_file
 	_cleanup_panel()
@@ -494,8 +522,8 @@ func _poll_equipped_state(iface: Node) -> void:
 		# Don't auto-open — wait for player middle-click
 		emit_signal("pouch_equipped", found_file)
 	else:
-		if _in_transition:
-			# Slot is empty after scene change — preserve contents until pouch is restored
+		if _in_transition or _pending_equip_tier != "":
+			# Slot is empty after scene change or pending re-equip — preserve contents
 			return
 		_panel_open = false
 		var drop_cfg: Node = _cfg()
@@ -833,7 +861,7 @@ func _load_session() -> void:
 	if parsed.get("tier", "") != _equipped_file:
 		return  # Session is for a different tier — ignore
 	var items_raw: Array = parsed.get("items", [])
-	var slot_count: int = TIERS[_equipped_file].slots
+	var slot_count: int = _slot_count(_equipped_file)
 	_contents.resize(slot_count)
 	for i: int in min(items_raw.size(), slot_count):
 		var entry: Variant = items_raw[i]
@@ -914,43 +942,41 @@ func _try_restore() -> void:
 	var tier_file: String = parsed.get("tier", "")
 	var items_raw: Array = parsed.get("items", [])
 
-	# Restore the container item itself into inventory
+	# Restore secured contents into _contents and write session file so they
+	# are available when the panel is next opened after re-equip.
+	if tier_file != "" and tier_file in TIERS:
+		var slot_count: int = _slot_count(tier_file)
+		_contents.resize(slot_count)
+		for i: int in min(items_raw.size(), slot_count):
+			var entry: Variant = items_raw[i]
+			if entry == null:
+				continue
+			var file_id: String = entry.get("file", "")
+			var item_res: ItemData = _resolve_item_data(file_id)
+			if not item_res:
+				push_warning("[SecureContainer] Could not find ItemData for file: %s" % file_id)
+				continue
+			var sd: SlotData = SlotData.new()
+			sd.itemData = item_res
+			sd.amount = entry.get("amount", 1)
+			sd.condition = entry.get("condition", 100)
+			_contents[i] = sd
+		# Temporarily set _equipped_file so _save_session writes the correct tier
+		var prev_file: String = _equipped_file
+		_equipped_file = tier_file
+		_save_session()
+		_equipped_file = prev_file
+
+	# Schedule re-equip into the Pouch slot on next slot injection
 	if tier_file != "" and tier_file in _item_data:
-		var container_sd: SlotData = SlotData.new()
-		container_sd.itemData = _item_data[tier_file]
-		container_sd.amount = 1
-		iface.Create(container_sd, iface.inventoryGrid, false)
-
-	# Restore secured items into inventory
-	var restored: Array = []
-	for entry: Variant in items_raw:
-		if entry == null:
-			restored.append(null)
-			continue
-		var file_id: String = entry.get("file", "")
-		var item_res: ItemData = _resolve_item_data(file_id)
-		if not item_res:
-			push_warning("[SecureContainer] Could not find ItemData for file: %s" % file_id)
-			continue
-
-		var sd: SlotData = SlotData.new()
-		sd.itemData = item_res
-		sd.amount = entry.get("amount", 1)
-		sd.condition = entry.get("condition", 100)
-
-		var placed: bool = false
-		if sd.itemData.stackable:
-			placed = iface.AutoStack(sd, iface.inventoryGrid)
-		if not placed:
-			iface.Create(sd, iface.inventoryGrid, false)
-		restored.append(sd)
+		_pending_equip_tier = tier_file
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_FILE))
 
-	var item_count: int = restored.filter(func(s: Variant) -> bool: return s != null).size()
+	var item_count: int = _contents.filter(func(s: Variant) -> bool: return s != null).size()
 	if item_count > 0 or tier_file != "":
-		emit_signal("container_restored", restored)
-		print("[SecureContainer] Restored %s + %d secured items" % [tier_file, item_count])
+		emit_signal("container_restored", _contents)
+		print("[SecureContainer] Restored %s + %d secured items (queued re-equip)" % [tier_file, item_count])
 
 func _resolve_item_data(file_id: String) -> ItemData:
 	if file_id in _item_data:

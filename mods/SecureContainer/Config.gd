@@ -18,6 +18,7 @@ var spawn_in_loot: bool     = true
 # ── Init ──────────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
+	Engine.set_meta("SecureContainerConfig", self)
 	_build_defaults()
 	_load_or_create()
 	_apply()
@@ -34,9 +35,9 @@ func _build_defaults() -> void:
 		"category":     "Behaviour",
 		"menu_pos":     1,
 		"default":      MOUSE_BUTTON_MIDDLE,
-		"default_type": "MouseButton",
+		"default_type": "Mouse",
 		"value":        MOUSE_BUTTON_MIDDLE,
-		"type":         "MouseButton",
+		"type":         "Mouse",
 	})
 
 	_config.set_value("Bool", "drop_on_unequip", {
@@ -106,11 +107,11 @@ func _load_or_create() -> void:
 func _apply() -> void:
 	var kb: Dictionary = _config.get_value("Keycode", "open_button", {})
 	open_button      = kb.get("value", MOUSE_BUTTON_MIDDLE)
-	open_button_type = kb.get("type",  "MouseButton")
+	open_button_type = kb.get("type",  "Mouse")
 	drop_on_unequip  = _config.get_value("Bool", "drop_on_unequip", {}).get("value", true)
-	slots_small      = _config.get_value("Int",  "slots_small",     {}).get("value", 2)
-	slots_medium     = _config.get_value("Int",  "slots_medium",    {}).get("value", 4)
-	slots_large      = _config.get_value("Int",  "slots_large",     {}).get("value", 6)
+	slots_small      = int(_config.get_value("Int",  "slots_small",     {}).get("value", 2))
+	slots_medium     = int(_config.get_value("Int",  "slots_medium",    {}).get("value", 4))
+	slots_large      = int(_config.get_value("Int",  "slots_large",     {}).get("value", 6))
 	spawn_in_loot    = _config.get_value("Bool", "spawn_in_loot",   {}).get("value", true)
 
 func _register_mcm() -> void:

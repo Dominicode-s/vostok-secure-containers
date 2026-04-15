@@ -1,5 +1,16 @@
 # Secure Container — Changelog
 
+## v1.0.1
+
+### Bug Fixes
+- **MCM settings not applying** — container sizes, keybind, and other MCM options now take effect correctly
+- **MCM keybind type mismatch** — explicitly binding a mouse button in MCM now works; previously only the default value was recognised
+- **On death, container re-equips automatically** — the pouch is restored directly into the equipment slot on respawn rather than appearing loose in the inventory; secured items remain inside
+- **Dragging container out of slot with "Drop on Unequip" disabled** — items now correctly return to inventory (or drop if inventory is full) instead of staying locked in the container
+- **Overflow items drop to ground** — when "Drop on Unequip" is disabled and inventory is full, any items that don't fit are dropped at the player's feet
+
+---
+
 ## v1.0.0
 
 ### Features
