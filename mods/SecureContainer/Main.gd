@@ -1,0 +1,1194 @@
+extends Node
+
+# ── Signals ──────────────────────────────────────────────────────────────────
+signal item_secured(slot_data)
+signal item_removed(slot_data)
+signal container_restored(items: Array)
+signal pouch_equipped(tier: String)
+signal pouch_unequipped()
+
+# ── Tier definitions ──────────────────────────────────────────────────────────
+const TIERS: Dictionary = {
+	"SecurePouch_S": {
+		"name": "Field Pouch",
+		"slots": 2,
+		"cols": 2,
+		"weight": 0.3,
+		"value": 150,
+		"rarity": 0,   # Common
+		"civilian": true, "industrial": false, "military": false,
+		"icon": "sachel.png",
+		"obj":  "field_pouch.obj",
+		"texture": "field_pouch_tex.png",   # original GLTF texture
+		"size":  Vector3(0.13, 0.18, 0.13),
+	},
+	"SecurePouch_M": {
+		"name": "Secure Pouch",
+		"slots": 4,
+		"cols": 2,
+		"weight": 0.5,
+		"value": 400,
+		"rarity": 1,   # Rare
+		"civilian": false, "industrial": true, "military": false,
+		"icon": "black.png",
+		"obj":  "secure_pouch.obj",
+		"texture": "secure_pouch_tex.png",  # darkened fabric texture
+		"size":  Vector3(0.17, 0.20, 0.13),
+	},
+	"SecurePouch_L": {
+		"name": "Secure Case",
+		"slots": 6,
+		"cols": 3,
+		"weight": 0.8,
+		"value": 800,
+		"rarity": 2,   # Legendary
+		"civilian": false, "industrial": false, "military": true,
+		"icon": "secure.png",
+		"obj":  "secure_case.obj",
+		"texture": "secure_case_tex.png",
+		"size":  Vector3(0.13, 0.12, 0.25),
+	},
+}
+
+const SAVE_FILE: String = "user://SecureContainer.json"
+const SESSION_FILE: String = "user://SecureContainer_session.json"
+
+# ── State ─────────────────────────────────────────────────────────────────────
+var gameData = preload("res://Resources/GameData.tres")
+
+var _item_data: Dictionary = {}          # file_id -> ItemData
+var _pickup_scenes: Dictionary = {}      # file_id -> PackedScene
+
+var _interface: Node = null
+var _was_dead: bool = false
+var _last_scene: String = ""
+
+# UI nodes (injected at runtime)
+var _pouch_slot: Control = null          # The injected equipment slot panel
+var _secure_panel: Control = null        # The secure contents panel
+var _slot_grid: Control = null           # GridContainer inside _secure_panel
+var _slot_injected: bool = false
+var _panel_injected: bool = false
+var _panel_open: bool = false     # player must double-click the pouch to open
+var _in_transition: bool = false  # true after scene change until pouch confirmed back in slot
+
+# Runtime container state
+var _equipped_file: String = ""          # Which tier is equipped ("" = none)
+var _contents: Array = []               # Array of SlotData or null per slot
+
+# ── Config Helper ────────────────────────────────────────────────────────────
+
+func _cfg() -> Node:
+	return get_node_or_null("/root/SecureContainerConfig")
+
+func _slot_count(tier_file: String) -> int:
+	var cfg: Node = _cfg()
+	if cfg:
+		match tier_file:
+			"SecurePouch_S": return cfg.slots_small
+			"SecurePouch_M": return cfg.slots_medium
+			"SecurePouch_L": return cfg.slots_large
+	return TIERS[tier_file].slots
+
+func _cols_for(slot_count: int) -> int:
+	return 3 if slot_count > 4 else 2
+
+# Called by Config.gd when the player saves MCM changes
+func _on_config_changed() -> void:
+	# Rebuild panel if open so slot count / layout updates immediately
+	if _panel_injected and _equipped_file != "":
+		var iface: Node = _get_interface()
+		_cleanup_panel()
+		if iface:
+			_inject_secure_panel(iface, _equipped_file)
+
+# ── Initialization ────────────────────────────────────────────────────────────
+
+func _ready() -> void:
+	Engine.set_meta("SecureContainer", self)
+	_create_item_data()
+	_init_pickups()
+	_inject_into_loot_pool()
+	_register_with_database()
+	_check_restore()
+	overrideScript("res://mods/SecureContainer/Interface.gd")
+
+func _create_item_data() -> void:
+	for file_id: String in TIERS:
+		var t: Dictionary = TIERS[file_id]
+
+		var icon: ImageTexture = _load_mod_image(t.icon)
+		var icon_res_path: String = "user://SC_Icon_%s.tres" % file_id
+
+		if icon:
+			ResourceSaver.save(icon, icon_res_path)
+			ResourceLoader.load(icon_res_path, "", ResourceLoader.CACHE_MODE_REPLACE)
+		else:
+			icon = _make_placeholder_icon(file_id)
+
+		var tetris_path: String = "user://SC_Tetris_%s.tscn" % file_id
+		var tetris_text: String = _build_tetris_tscn(file_id, icon_res_path if icon else "")
+		var f: FileAccess = FileAccess.open(tetris_path, FileAccess.WRITE)
+		if f:
+			f.store_string(tetris_text)
+			f.close()
+		var tetris: PackedScene = ResourceLoader.load(tetris_path, "", ResourceLoader.CACHE_MODE_REPLACE)
+
+		var item: ItemData = ItemData.new()
+		item.file = file_id
+		item.name = t.name
+		item.inventory = t.name
+		item.rotated = t.name
+		item.equipment = t.name
+		item.display = t.name
+		item.type = "Equipment"
+		item.weight = t.weight
+		item.value = t.value
+		item.size = Vector2(1, 1)
+		item.stackable = false
+		item.showAmount = false
+		item.slots = ["Pouch"]
+		item.icon = icon
+		item.tetris = tetris
+		match t.rarity:
+			0: item.rarity = item.Rarity.Common
+			1: item.rarity = item.Rarity.Rare
+			2: item.rarity = item.Rarity.Legendary
+		item.civilian  = t.civilian
+		item.industrial = t.industrial
+		item.military  = t.military
+
+		var item_path: String = "user://SC_Item_%s.tres" % file_id
+		ResourceSaver.save(item, item_path)
+		# Reload from disk so resource_path is set — without this, Character.tres
+		# saves a broken reference and logs "File not found: {item.name}" on load.
+		var loaded: ItemData = ResourceLoader.load(item_path, "", ResourceLoader.CACHE_MODE_REPLACE)
+		_item_data[file_id] = loaded if loaded else item
+		print("[SecureContainer] Created item: %s" % t.name)
+
+func _init_pickups() -> void:
+	for file_id: String in TIERS:
+		var t: Dictionary = TIERS[file_id]
+		var mesh_path: String = "user://SC_Mesh_%s.res" % file_id
+		var mat_path: String = ""
+		var pickup_path: String = "user://SC_Pickup_%s.tscn" % file_id
+		var has_custom_mesh: bool = false
+
+		var obj_path: String = _mod_file_path(t.obj)
+		if obj_path != "":
+			var mesh: ArrayMesh = _parse_obj(obj_path)
+			if mesh:
+				# Bake material into the mesh surface so no external .tres is needed
+				var mat: StandardMaterial3D = StandardMaterial3D.new()
+				mat.roughness = 0.9
+				if t.has("texture"):
+					var img_tex: ImageTexture = _load_mod_image(t.texture)
+					if img_tex:
+						mat.albedo_texture = img_tex
+				elif t.has("color"):
+					mat.albedo_color = t.color
+				for i: int in mesh.get_surface_count():
+					mesh.surface_set_material(i, mat)
+				ResourceSaver.save(mesh, mesh_path)
+				ResourceLoader.load(mesh_path, "", ResourceLoader.CACHE_MODE_REPLACE)
+				has_custom_mesh = true
+
+		var tscn_text: String = _build_pickup_tscn(file_id, mesh_path, has_custom_mesh)
+		var f: FileAccess = FileAccess.open(pickup_path, FileAccess.WRITE)
+		if f:
+			f.store_string(tscn_text)
+			f.close()
+		var scene: PackedScene = ResourceLoader.load(pickup_path, "", ResourceLoader.CACHE_MODE_REPLACE)
+		if scene:
+			_pickup_scenes[file_id] = scene
+
+func _inject_into_loot_pool() -> void:
+	var loot_cfg: Node = _cfg()
+	if loot_cfg and not loot_cfg.spawn_in_loot:
+		print("[SecureContainer] Loot spawning disabled via config")
+		return
+	var lt: Resource = load("res://Loot/LT_Master.tres")
+	if not lt:
+		print("[SecureContainer] Could not load LT_Master — pouches won't spawn in loot")
+		return
+	for file_id: String in _item_data:
+		var item: ItemData = _item_data[file_id]
+		var already: bool = false
+		for existing in lt.items:
+			if existing and existing.file == file_id:
+				already = true
+				break
+		if not already:
+			lt.items.append(item)
+	print("[SecureContainer] Pouches added to loot pool")
+
+func _register_with_database() -> void:
+	print("[SecureContainer] _register_with_database() called")
+
+	# Dump all /root children so we can see every autoload name
+	var root: Node = get_tree().root
+	var root_children: Array = []
+	for child in root.get_children():
+		root_children.append(child.name)
+	print("[SecureContainer] /root children: ", root_children)
+
+	# Try to find the Database autoload
+	var db: Node = get_node_or_null("/root/Database")
+	print("[SecureContainer] /root/Database = ", db)
+	if not db:
+		print("[SecureContainer] ERROR: Database autoload not found — spawner integration skipped")
+		return
+
+	print("[SecureContainer] Database properties: ", db.get_property_list().map(func(p): return p.name))
+
+	if not "master" in db:
+		print("[SecureContainer] ERROR: Database has no 'master' property")
+		return
+	if not db.master:
+		print("[SecureContainer] ERROR: Database.master is null")
+		return
+
+	print("[SecureContainer] Database.master = ", db.master)
+	print("[SecureContainer] Database.master type = ", db.master.get_class())
+
+	if not "items" in db.master:
+		print("[SecureContainer] ERROR: Database.master has no 'items' property")
+		print("[SecureContainer] Database.master properties: ", db.master.get_property_list().map(func(p): return p.name))
+		return
+
+	print("[SecureContainer] Database.master.items count BEFORE: ", db.master.items.size())
+
+	for file_id: String in _item_data:
+		var item: ItemData = _item_data[file_id]
+		var already: bool = false
+		for existing in db.master.items:
+			if existing and existing.file == file_id:
+				already = true
+				break
+		if not already:
+			db.master.items.append(item)
+			print("[SecureContainer] Added to Database: ", item.name)
+		else:
+			print("[SecureContainer] Already in Database: ", item.name)
+
+	print("[SecureContainer] Database.master.items count AFTER: ", db.master.items.size())
+
+	# If Item Spawner is already loaded, tell it to refresh
+	var spawner: Node = get_node_or_null("/root/ItemSpawner")
+	print("[SecureContainer] ItemSpawner node = ", spawner)
+	if spawner and spawner.has_method("forceRefresh"):
+		spawner.forceRefresh()
+		print("[SecureContainer] Called forceRefresh() on ItemSpawner")
+
+	print("[SecureContainer] _register_with_database() done")
+
+# ── Process ───────────────────────────────────────────────────────────────────
+
+func _process(_delta: float) -> void:
+	# Death detection — save contents before the game wipes inventory
+	if gameData.isDead:
+		if not _was_dead:
+			_save_contents()
+			_was_dead = true
+	else:
+		_was_dead = false
+
+	# Scene change detection for post-respawn restore
+	var scene: Node = get_tree().current_scene
+	if scene and "mapName" in scene:
+		var mn: String = str(scene.mapName)
+		if mn != "" and mn != _last_scene:
+			_last_scene = mn
+			call_deferred("_try_restore")
+	elif scene:
+		_last_scene = ""
+
+	# Scene change detection: if the pouch slot was freed (e.g. scene unloaded),
+	# reset flags so it gets reinjected into the new scene's Interface.
+	if _slot_injected and (not _pouch_slot or not is_instance_valid(_pouch_slot) or not _pouch_slot.is_inside_tree()):
+		_slot_injected = false
+		_panel_injected = false
+		_secure_panel = null
+		_slot_grid = null
+		_interface = null  # force re-fetch from new scene
+		_in_transition = true  # suppress unequip-drop until pouch confirmed in slot
+
+	var iface: Node = _get_interface()
+	if not iface:
+		return
+
+	var inv: Node = iface.get_node_or_null("Inventory")
+	if inv and inv.visible:
+		if not _slot_injected:
+			call_deferred("_inject_pouch_slot", iface)
+		_poll_equipped_state(iface)
+	else:
+		_cleanup_panel()
+
+# ── Input — shift+click or drag-and-drop to secure ───────────────────────────
+
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventMouseButton):
+		return
+	var mbe: InputEventMouseButton = event as InputEventMouseButton
+	var iface: Node = _get_interface()
+	if not iface:
+		return
+
+	# Configured button on the equipped pouch item — toggle the panel open/closed
+	var cfg: Node = _cfg()
+	var open_btn: int = cfg.open_button if cfg else MOUSE_BUTTON_MIDDLE
+	var open_btn_type: String = cfg.open_button_type if cfg else "MouseButton"
+	var is_open_press: bool = mbe.pressed and _equipped_file != "" \
+		and ((open_btn_type == "MouseButton" and mbe.button_index == open_btn) \
+		or   (open_btn_type == "Key" and false))  # key handled in _input via InputEventKey
+	if is_open_press:
+		if _pouch_slot and is_instance_valid(_pouch_slot):
+			if _pouch_slot.get_global_rect().has_point(mbe.global_position):
+				_panel_open = not _panel_open
+				if _panel_open:
+					call_deferred("_inject_secure_panel", iface, _equipped_file)
+				else:
+					_cleanup_panel()
+				get_viewport().set_input_as_handled()
+				return
+
+	if mbe.button_index != MOUSE_BUTTON_LEFT:
+		return
+
+	if not _panel_injected:
+		return
+
+	# Mouse RELEASE: secure a dragged item if it was released over the panel
+	if not mbe.pressed:
+		var dragged: Node = iface.get("itemDragged")
+		if dragged and _secure_panel and is_instance_valid(_secure_panel):
+			if _secure_panel.get_global_rect().has_point(mbe.global_position):
+				for i: int in _contents.size():
+					if _contents[i] == null:
+						_secure_dragged(dragged, iface, i)
+						get_viewport().set_input_as_handled()
+						return
+		return
+
+	# Mouse PRESS + Shift: quick-secure the hovered inventory item
+	if not mbe.shift_pressed:
+		return
+	var hover_item: Node = iface.get("hoverItem")
+	if not hover_item:
+		return
+	var hover_grid: Node = iface.get("hoverGrid")
+	if not hover_grid or hover_grid != iface.inventoryGrid:
+		return
+	for i: int in _contents.size():
+		if _contents[i] == null:
+			_move_to_secure(hover_item, hover_grid, i)
+			get_viewport().set_input_as_handled()
+			return
+
+# ── Equipment Slot Injection ──────────────────────────────────────────────────
+
+func _inject_pouch_slot(iface: Node) -> void:
+	if _slot_injected:
+		return
+
+	var slot_script: Script = load("res://Scripts/Slot.gd")
+	if not slot_script:
+		push_warning("[SecureContainer] Could not load Slot.gd")
+		return
+
+	var equipment: Node = _find_equipment_panel(iface)
+	if not equipment:
+		push_warning("[SecureContainer] Could not find equipment panel")
+		return
+
+	_pouch_slot = Panel.new()
+	_pouch_slot.name = "Pouch"
+	_pouch_slot.set_script(slot_script)
+	# Position next to the Player slot (last in the bottom accessory row)
+	# Row runs: Matches(0) Light(64) NVG(128) Time(192) Map(256) Player(320) → Pouch(384)
+	_pouch_slot.layout_mode = 0
+	_pouch_slot.offset_left   = 384.0
+	_pouch_slot.offset_top    = 448.0
+	_pouch_slot.offset_right  = 448.0
+	_pouch_slot.offset_bottom = 512.0
+	_apply_slot_style(_pouch_slot, false)
+
+	# Hint must NOT be a child of the slot — vanilla slots store hints in a
+	# separate Equipment/Hints container. The equip check is:
+	#   hoverSlot.get_child_count() == 0
+	# so any child on an empty slot blocks equipping.
+	var hint: Label = Label.new()
+	hint.name = "SC_Pouch_Hint"
+	hint.text = "Pouch"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	hint.layout_mode = 0
+	hint.offset_left   = 384.0
+	hint.offset_top    = 448.0
+	hint.offset_right  = 448.0
+	hint.offset_bottom = 512.0
+	hint.add_theme_font_size_override("font_size", 9)
+	hint.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+	_pouch_slot.hint = hint
+
+	# Add hint to the shared Hints container if it exists, otherwise equipment panel
+	var hints_container: Node = equipment.get_node_or_null("Hints")
+	if hints_container:
+		hints_container.add_child(hint)
+	else:
+		equipment.add_child(hint)
+
+	equipment.add_child(_pouch_slot)
+	_slot_injected = true
+	print("[SecureContainer] Pouch slot injected into equipment panel")
+
+func _find_equipment_panel(iface: Node) -> Node:
+	# Equipment is a direct child of Interface (not under Inventory)
+	for path: String in ["Equipment", "Inventory/Equipment"]:
+		var node: Node = iface.get_node_or_null(path)
+		if node:
+			return node
+	return _scan_for_slots(iface)
+
+func _scan_for_slots(node: Node) -> Node:
+	for child: Node in node.get_children():
+		if child is Control:
+			for sub: Node in child.get_children():
+				if sub.get_script() and "Slot" in sub.get_script().resource_path:
+					return child
+		var result: Node = _scan_for_slots(child)
+		if result:
+			return result
+	return null
+
+# ── Secure Panel UI ───────────────────────────────────────────────────────────
+
+func _poll_equipped_state(iface: Node) -> void:
+	if not _pouch_slot or not is_instance_valid(_pouch_slot):
+		return
+
+	var found_file: String = ""
+	for child: Node in _pouch_slot.get_children():
+		if "slotData" in child and child.slotData and child.slotData.itemData:
+			found_file = child.slotData.itemData.file
+			break
+
+	if found_file != "":
+		_in_transition = false  # Pouch confirmed in slot — scene is stable
+
+	if found_file == _equipped_file:
+		# Same tier — reinject panel only if player had it open
+		if found_file != "" and _panel_open and not _panel_injected:
+			call_deferred("_inject_secure_panel", iface, found_file)
+		return
+
+	# Tier changed — full reset
+	_equipped_file = found_file
+	_cleanup_panel()
+
+	if found_file != "" and found_file in TIERS:
+		var slot_count: int = _slot_count(found_file)
+		if _contents.size() != slot_count:
+			_contents.resize(slot_count)
+		# Don't auto-open — wait for player middle-click
+		emit_signal("pouch_equipped", found_file)
+	else:
+		if _in_transition:
+			# Slot is empty after scene change — preserve contents until pouch is restored
+			return
+		_panel_open = false
+		var drop_cfg: Node = _cfg()
+		if drop_cfg and not drop_cfg.drop_on_unequip:
+			_return_all_to_inventory()
+		else:
+			_drop_contents_to_world()
+		_delete_session()
+		_contents = []
+		emit_signal("pouch_unequipped")
+
+func _inject_secure_panel(iface: Node, tier_file: String) -> void:
+	if _panel_injected:
+		return
+
+	var t: Dictionary = TIERS[tier_file]
+	var slot_count: int = _slot_count(tier_file)
+	var cols: int = _cols_for(slot_count)
+	_contents.resize(slot_count)
+
+	_secure_panel = PanelContainer.new()
+	_secure_panel.name = "SC_Panel"
+
+	var bg: StyleBoxFlat = StyleBoxFlat.new()
+	bg.bg_color = Color(0.08, 0.08, 0.08, 0.97)
+	bg.border_width_left = 1
+	bg.border_width_right = 1
+	bg.border_width_top = 1
+	bg.border_width_bottom = 1
+	bg.border_color = Color(0.32, 0.32, 0.32)
+	bg.content_margin_left = 8.0
+	bg.content_margin_right = 8.0
+	bg.content_margin_top = 6.0
+	bg.content_margin_bottom = 8.0
+	_secure_panel.add_theme_stylebox_override("panel", bg)
+
+	var vbox: VBoxContainer = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+
+	var header: Label = Label.new()
+	header.text = "[ %s ]" % t.name.to_upper()
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+	header.add_theme_font_size_override("font_size", 10)
+	vbox.add_child(header)
+
+	_slot_grid = GridContainer.new()
+	_slot_grid.columns = cols
+	_slot_grid.add_theme_constant_override("h_separation", 4)
+	_slot_grid.add_theme_constant_override("v_separation", 4)
+
+	for i: int in slot_count:
+		_slot_grid.add_child(_build_slot_widget(i))
+
+	vbox.add_child(_slot_grid)
+
+	_secure_panel.add_child(vbox)
+
+	# Parent to Interface so we're in screen-space and never overlap the grids.
+	# Position just below the Pouch slot using its global rect.
+	_secure_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	_secure_panel.z_index = 10
+	iface.add_child(_secure_panel)
+
+	# Position below the Pouch slot — resolve after layout is ready next frame
+	call_deferred("_position_secure_panel")
+	call_deferred("_refresh_slots")
+
+	_panel_injected = true
+	_load_session()   # restore contents if they were cleared by a transition
+	_refresh_slots()
+	print("[SecureContainer] Secure panel injected (%d slots)" % t.slots)
+
+func _position_secure_panel() -> void:
+	if not _secure_panel or not is_instance_valid(_secure_panel):
+		return
+	if not _pouch_slot or not is_instance_valid(_pouch_slot):
+		return
+
+	# Convert the Pouch slot's screen rect into the Interface's local space
+	var iface: Node = _get_interface()
+	if not iface:
+		return
+
+	var slot_global: Rect2 = _pouch_slot.get_global_rect()
+	var iface_inv: Transform2D = iface.get_global_transform().affine_inverse()
+	var panel_pos: Vector2 = iface_inv * slot_global.position
+
+	# Place the panel to the RIGHT of the pouch slot, top-aligned with it
+	panel_pos.x += slot_global.size.x + 8.0
+
+	# Clamp so the panel stays within the Interface rect
+	var iface_size: Vector2 = iface.get_rect().size
+	var panel_size: Vector2 = _secure_panel.get_combined_minimum_size()
+	panel_pos.x = clamp(panel_pos.x, 4.0, iface_size.x - panel_size.x - 4.0)
+	panel_pos.y = clamp(panel_pos.y, 4.0, iface_size.y - panel_size.y - 4.0)
+
+	_secure_panel.position = panel_pos
+
+func _build_slot_widget(index: int) -> Control:
+	var panel: Panel = Panel.new()
+	panel.name = "Slot_%d" % index
+	panel.custom_minimum_size = Vector2(80, 80)
+	panel.clip_contents = true
+	_apply_slot_style(panel, false)
+
+	var icon_rect: TextureRect = TextureRect.new()
+	icon_rect.name = "Icon"
+	icon_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	icon_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(icon_rect)
+
+	var amount_lbl: Label = Label.new()
+	amount_lbl.name = "Amount"
+	amount_lbl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	amount_lbl.offset_right = -4.0
+	amount_lbl.offset_bottom = -2.0
+	amount_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	amount_lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	amount_lbl.add_theme_font_size_override("font_size", 10)
+	amount_lbl.add_theme_color_override("font_color", Color.WHITE)
+	amount_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(amount_lbl)
+
+	panel.gui_input.connect(_on_slot_gui_input.bind(index))
+	panel.mouse_entered.connect(_on_slot_hover.bind(panel, true))
+	panel.mouse_exited.connect(_on_slot_hover.bind(panel, false))
+
+	return panel
+
+func _on_slot_gui_input(event: InputEvent, index: int) -> void:
+	if not (event is InputEventMouseButton):
+		return
+	var mbe: InputEventMouseButton = event as InputEventMouseButton
+	if mbe.pressed and mbe.button_index == MOUSE_BUTTON_LEFT:
+		if _contents[index] != null:
+			_return_to_inventory(index)
+
+func _on_slot_hover(panel: Control, entered: bool) -> void:
+	_apply_slot_style(panel, entered and _contents[_slot_grid.get_children().find(panel)] != null)
+
+func _apply_slot_style(panel: Control, highlight: bool) -> void:
+	var style: StyleBoxFlat = StyleBoxFlat.new()
+	style.bg_color = Color(0.20, 0.20, 0.20) if highlight else Color(0.11, 0.11, 0.11)
+	style.border_width_left = 1
+	style.border_width_right = 1
+	style.border_width_top = 1
+	style.border_width_bottom = 1
+	style.border_color = Color(0.55, 0.55, 0.55) if highlight else Color(0.22, 0.22, 0.22)
+	panel.add_theme_stylebox_override("panel", style)
+
+func _refresh_slots() -> void:
+	if not _slot_grid or not is_instance_valid(_slot_grid):
+		return
+	var children: Array = _slot_grid.get_children()
+	for i: int in _contents.size():
+		if i >= children.size():
+			break
+		var slot: Control = children[i]
+		var icon_rect: TextureRect = slot.get_node_or_null("Icon")
+		var amount_lbl: Label = slot.get_node_or_null("Amount")
+		var sd: SlotData = _contents[i]
+		if sd:
+			if icon_rect:
+				icon_rect.texture = sd.itemData.icon
+			if amount_lbl:
+				amount_lbl.text = str(sd.amount) if sd.itemData.stackable and sd.amount > 1 else ""
+		else:
+			if icon_rect:
+				icon_rect.texture = null
+			if amount_lbl:
+				amount_lbl.text = ""
+
+func _cleanup_panel() -> void:
+	if _secure_panel and is_instance_valid(_secure_panel):
+		_secure_panel.queue_free()
+	_secure_panel = null
+	_slot_grid = null
+	_panel_injected = false
+
+# ── Item Transfer ─────────────────────────────────────────────────────────────
+
+func _secure_dragged(dragged: Node, iface: Node, slot_index: int) -> void:
+	# Item is already floating (picked from grid), just copy data, free it, reset drag
+	var sd: SlotData = SlotData.new()
+	sd.Update(dragged.slotData)
+	dragged.queue_free()
+	iface.Reset()
+	_contents[slot_index] = sd
+	_save_session()
+	_refresh_slots()
+	emit_signal("item_secured", sd)
+	print("[SecureContainer] Secured via drag: %s" % sd.itemData.name)
+
+func _move_to_secure(item: Node, grid: Node, slot_index: int) -> void:
+	if _contents[slot_index] != null:
+		return
+
+	# Copy slot data before removing from inventory
+	var sd: SlotData = SlotData.new()
+	sd.Update(item.slotData)
+
+	# Remove from inventory grid
+	var picked: Node = grid.Pick(item)
+	if not picked:
+		return
+	picked.queue_free()
+
+	_contents[slot_index] = sd
+	_save_session()
+	_refresh_slots()
+	emit_signal("item_secured", sd)
+	print("[SecureContainer] Secured: %s" % sd.itemData.name)
+
+func _return_to_inventory(slot_index: int) -> void:
+	var sd: SlotData = _contents[slot_index]
+	if not sd:
+		return
+
+	var iface: Node = _get_interface()
+	if not iface:
+		return
+
+	var placed: bool = false
+	if sd.itemData.stackable:
+		placed = iface.AutoStack(sd, iface.inventoryGrid)
+	if not placed:
+		placed = iface.Create(sd, iface.inventoryGrid, true)
+
+	if placed:
+		_contents[slot_index] = null
+		_save_session()
+		_refresh_slots()
+		emit_signal("item_removed", sd)
+		print("[SecureContainer] Returned: %s" % sd.itemData.name)
+	else:
+		print("[SecureContainer] Inventory full — can't return %s" % sd.itemData.name)
+
+func _return_all_to_inventory() -> void:
+	var iface: Node = _get_interface()
+	if not iface:
+		_drop_contents_to_world()  # fallback if no interface
+		return
+	for i: int in _contents.size():
+		var sd: SlotData = _contents[i]
+		if not sd:
+			continue
+		var placed: bool = false
+		if sd.itemData.stackable:
+			placed = iface.AutoStack(sd, iface.inventoryGrid)
+		if not placed:
+			placed = iface.Create(sd, iface.inventoryGrid, false)
+		if not placed:
+			# Inventory full — drop this one
+			_drop_single_to_world(sd)
+
+# ── Drop Contents to World ────────────────────────────────────────────────────
+
+func _drop_contents_to_world() -> void:
+	for sd: SlotData in _contents:
+		if sd == null or not sd.itemData:
+			continue
+		_drop_single_to_world(sd)
+
+func _drop_single_to_world(sd: SlotData) -> void:
+	var map: Node = get_tree().current_scene.get_node_or_null("/root/Map")
+	if not map:
+		return
+
+	var iface: Node = _get_interface()
+	var cam: Node = iface.get("camera") if iface else null
+
+	var base_pos: Vector3
+	var base_dir: Vector3
+	if cam and is_instance_valid(cam):
+		base_dir = -cam.global_transform.basis.z
+		base_pos = cam.global_position + Vector3(0, -0.25, 0) + base_dir * 0.6
+	else:
+		base_pos = Vector3(0, 1, 0)
+		base_dir = Vector3(0, 0, 1)
+
+	var db: Node = get_node_or_null("/root/Database")
+	var scene: PackedScene = _pickup_scenes.get(sd.itemData.file, null)
+	if not scene and db:
+		scene = db.get(sd.itemData.file)
+	if not scene:
+		push_warning("[SecureContainer] No pickup scene for %s — skipping drop" % sd.itemData.file)
+		return
+
+	var pickup: Node = scene.instantiate()
+	map.add_child(pickup)
+	var spread: Vector3 = Vector3(randf_range(-0.3, 0.3), 0.0, randf_range(-0.3, 0.3))
+	pickup.position = base_pos + spread
+	pickup.rotation_degrees = Vector3(-25, randf_range(0, 360), 45)
+	var slot: SlotData = SlotData.new()
+	slot.Update(sd)
+	pickup.slotData = slot
+	if pickup.has_method("Unfreeze"):
+		pickup.Unfreeze()
+	pickup.linear_velocity = (base_dir + spread.normalized() * 0.3) * 2.0
+
+# ── Session Persistence (survives scene changes and main menu) ────────────────
+
+func _save_session() -> void:
+	if _equipped_file == "":
+		return
+	var data: Dictionary = {"tier": _equipped_file, "items": []}
+	for sd: Variant in _contents:
+		if sd == null:
+			data.items.append(null)
+		else:
+			data.items.append({
+				"file":     sd.itemData.file,
+				"res_path": sd.itemData.resource_path,
+				"amount":   sd.amount,
+				"condition": sd.condition,
+			})
+	var f: FileAccess = FileAccess.open(SESSION_FILE, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(data))
+		f.close()
+
+func _load_session() -> void:
+	if not FileAccess.file_exists(SESSION_FILE):
+		return
+	var f: FileAccess = FileAccess.open(SESSION_FILE, FileAccess.READ)
+	if not f:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if not parsed or not (parsed is Dictionary):
+		return
+	if parsed.get("tier", "") != _equipped_file:
+		return  # Session is for a different tier — ignore
+	var items_raw: Array = parsed.get("items", [])
+	var slot_count: int = TIERS[_equipped_file].slots
+	_contents.resize(slot_count)
+	for i: int in min(items_raw.size(), slot_count):
+		var entry: Variant = items_raw[i]
+		if entry == null:
+			continue
+		# Prefer direct resource path load — avoids searching gameData which only
+		# contains items the player currently has, not all item definitions.
+		var item_res: ItemData = null
+		var res_path: String = entry.get("res_path", "")
+		if res_path != "" and ResourceLoader.exists(res_path):
+			item_res = ResourceLoader.load(res_path, "ItemData", ResourceLoader.CACHE_MODE_REUSE)
+		if not item_res:
+			item_res = _resolve_item_data(entry.get("file", ""))
+		if not item_res:
+			push_warning("[SecureContainer] Could not restore item: %s" % entry.get("file", "?"))
+			continue
+		var sd: SlotData = SlotData.new()
+		sd.itemData = item_res
+		sd.amount = entry.get("amount", 1)
+		sd.condition = entry.get("condition", 100)
+		_contents[i] = sd
+
+func _delete_session() -> void:
+	if FileAccess.file_exists(SESSION_FILE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(SESSION_FILE))
+
+# ── Death Persistence ─────────────────────────────────────────────────────────
+
+func _save_contents() -> void:
+	var non_null: Array = _contents.filter(func(s: Variant) -> bool: return s != null)
+	if non_null.is_empty() and _equipped_file == "":
+		return
+
+	var data: Dictionary = {
+		"tier": _equipped_file,
+		"items": []
+	}
+
+	for sd: Variant in _contents:
+		if sd == null:
+			data.items.append(null)
+		else:
+			data.items.append({
+				"file":      sd.itemData.file,
+				"amount":    sd.amount,
+				"condition": sd.condition,
+			})
+
+	var f: FileAccess = FileAccess.open(SAVE_FILE, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(data, "\t"))
+		f.close()
+		print("[SecureContainer] Saved %d secured items (tier: %s)" % [non_null.size(), _equipped_file])
+
+func _check_restore() -> void:
+	if FileAccess.file_exists(SAVE_FILE):
+		print("[SecureContainer] Restore file found — will restore on next scene load")
+
+func _try_restore() -> void:
+	if not FileAccess.file_exists(SAVE_FILE):
+		return
+
+	var iface: Node = _get_interface()
+	if not iface:
+		return
+
+	var f: FileAccess = FileAccess.open(SAVE_FILE, FileAccess.READ)
+	if not f:
+		return
+	var text: String = f.get_as_text()
+	f.close()
+
+	var parsed: Variant = JSON.parse_string(text)
+	if not parsed or not (parsed is Dictionary):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_FILE))
+		return
+
+	var tier_file: String = parsed.get("tier", "")
+	var items_raw: Array = parsed.get("items", [])
+
+	# Restore the container item itself into inventory
+	if tier_file != "" and tier_file in _item_data:
+		var container_sd: SlotData = SlotData.new()
+		container_sd.itemData = _item_data[tier_file]
+		container_sd.amount = 1
+		iface.Create(container_sd, iface.inventoryGrid, false)
+
+	# Restore secured items into inventory
+	var restored: Array = []
+	for entry: Variant in items_raw:
+		if entry == null:
+			restored.append(null)
+			continue
+		var file_id: String = entry.get("file", "")
+		var item_res: ItemData = _resolve_item_data(file_id)
+		if not item_res:
+			push_warning("[SecureContainer] Could not find ItemData for file: %s" % file_id)
+			continue
+
+		var sd: SlotData = SlotData.new()
+		sd.itemData = item_res
+		sd.amount = entry.get("amount", 1)
+		sd.condition = entry.get("condition", 100)
+
+		var placed: bool = false
+		if sd.itemData.stackable:
+			placed = iface.AutoStack(sd, iface.inventoryGrid)
+		if not placed:
+			iface.Create(sd, iface.inventoryGrid, false)
+		restored.append(sd)
+
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_FILE))
+
+	var item_count: int = restored.filter(func(s: Variant) -> bool: return s != null).size()
+	if item_count > 0 or tier_file != "":
+		emit_signal("container_restored", restored)
+		print("[SecureContainer] Restored %s + %d secured items" % [tier_file, item_count])
+
+func _resolve_item_data(file_id: String) -> ItemData:
+	if file_id in _item_data:
+		return _item_data[file_id]
+	# Search game's global item database
+	if gameData and "items" in gameData:
+		for item: Variant in gameData.items:
+			if item and item.file == file_id:
+				return item
+	return null
+
+# ── Script Override ───────────────────────────────────────────────────────────
+
+func overrideScript(path: String) -> void:
+	var script: Script = load(path)
+	if not script:
+		push_warning("[SecureContainer] Failed to load override: " + path)
+		return
+	script.reload()
+
+	# Determine the target path: try get_base_script() first, then parse extends annotation
+	var target_path: String = ""
+	var parent: Script = script.get_base_script()
+	if parent:
+		target_path = parent.resource_path
+	if target_path == "":
+		# Fallback: extract path from the first `extends "..."` line in source
+		for line: String in script.source_code.split("\n"):
+			var s: String = line.strip_edges()
+			if s.begins_with('extends "') and s.ends_with('"'):
+				target_path = s.substr(9, s.length() - 10)
+				break
+	if target_path == "":
+		push_warning("[SecureContainer] Could not determine base path for: " + path)
+		return
+	script.take_over_path(target_path)
+	print("[SecureContainer] Overrode: " + target_path)
+
+# ── Interface Helper ──────────────────────────────────────────────────────────
+
+func _get_interface() -> Node:
+	if _interface and is_instance_valid(_interface):
+		return _interface
+	var scene: Node = get_tree().current_scene
+	if not scene:
+		return null
+	_interface = scene.get_node_or_null("/root/Map/Core/UI/Interface")
+	return _interface
+
+# ── Asset Helpers ─────────────────────────────────────────────────────────────
+
+func _mod_file_path(filename: String) -> String:
+	var res_path: String = "res://mods/SecureContainer/" + filename
+	if FileAccess.file_exists(res_path):
+		return res_path
+	var disk_path: String = OS.get_executable_path().get_base_dir()\
+		.path_join("mods").path_join("SecureContainer").path_join(filename)
+	if FileAccess.file_exists(disk_path):
+		return disk_path
+	return ""
+
+func _load_mod_image(filename: String) -> ImageTexture:
+	var path: String = _mod_file_path(filename)
+	if path == "":
+		return null
+	var bytes: PackedByteArray = FileAccess.get_file_as_bytes(path)
+	if bytes.is_empty():
+		return null
+	var img: Image = Image.new()
+	var ext: String = filename.get_extension().to_lower()
+	var err: int = ERR_FILE_UNRECOGNIZED
+	if ext == "png":
+		err = img.load_png_from_buffer(bytes)
+	elif ext in ["jpg", "jpeg"]:
+		err = img.load_jpg_from_buffer(bytes)
+	if err != OK:
+		return null
+	return ImageTexture.create_from_image(img)
+
+func _make_placeholder_icon(file_id: String) -> ImageTexture:
+	var colors: Dictionary = {
+		"SecurePouch_S": Color(0.15, 0.22, 0.15),
+		"SecurePouch_M": Color(0.12, 0.15, 0.22),
+		"SecurePouch_L": Color(0.22, 0.15, 0.10),
+	}
+	var col: Color = colors.get(file_id, Color(0.15, 0.15, 0.15))
+	var img: Image = Image.create(128, 128, false, Image.FORMAT_RGBA8)
+	img.fill(col)
+	for x: int in 128:
+		for y: int in [0, 1, 2, 125, 126, 127]:
+			img.set_pixel(x, y, col.lightened(0.3))
+	for y: int in 128:
+		for x: int in [0, 1, 2, 125, 126, 127]:
+			img.set_pixel(x, y, col.lightened(0.3))
+	return ImageTexture.create_from_image(img)
+
+func _build_tetris_tscn(file_id: String, icon_path: String) -> String:
+	var lines: PackedStringArray = PackedStringArray()
+	lines.append('[gd_scene format=3]')
+	lines.append('')
+	lines.append('[ext_resource type="Material" path="res://UI/Effects/MT_Item.tres" id="1"]')
+	if icon_path != "":
+		lines.append('[ext_resource type="Texture2D" path="' + icon_path + '" id="2"]')
+	lines.append('')
+	lines.append('[node name="' + file_id + '" type="Sprite2D"]')
+	lines.append('material = ExtResource("1")')
+	lines.append('position = Vector2(32, 32)')
+	lines.append('scale = Vector2(0.5, 0.5)')
+	if icon_path != "":
+		lines.append('texture = ExtResource("2")')
+	lines.append('')
+	return "\n".join(lines)
+
+func _build_pickup_tscn(file_id: String, mesh_path: String, custom_mesh: bool) -> String:
+	var lines: PackedStringArray = PackedStringArray()
+	lines.append('[gd_scene format=3]')
+	lines.append('')
+	lines.append('[ext_resource type="PhysicsMaterial" path="res://Items/Physics/Item_Physics.tres" id="1"]')
+	lines.append('[ext_resource type="Script" path="res://Scripts/Pickup.gd" id="2"]')
+	lines.append('[ext_resource type="Resource" path="user://SC_Item_%s.tres" id="3"]' % file_id)
+	lines.append('[ext_resource type="Script" path="res://Scripts/SlotData.gd" id="4"]')
+	if custom_mesh:
+		lines.append('[ext_resource type="ArrayMesh" path="' + mesh_path + '" id="5"]')
+	lines.append('')
+	lines.append('[sub_resource type="Resource" id="SlotData_1"]')
+	lines.append('script = ExtResource("4")')
+	lines.append('resource_local_to_scene = true')
+	lines.append('itemData = ExtResource("3")')
+	lines.append('')
+
+	var t: Dictionary = TIERS.get(file_id, {})
+
+	# Collision box
+	var col_size: Vector3
+	if t.has("size"):
+		col_size = t.size
+	else:
+		var sz: float = 0.06 + t.get("weight", 0.5) * 0.05
+		col_size = Vector3(sz, 0.04, sz * 0.7)
+
+	# Fallback box mesh + colour material for tiers with no custom mesh
+	if not custom_mesh:
+		lines.append('[sub_resource type="BoxMesh" id="BoxMesh_1"]')
+		lines.append('size = Vector3(%f, %f, %f)' % [col_size.x, col_size.y, col_size.z])
+		lines.append('')
+		var mat_col: Color = t.get("color", Color(0.5, 0.5, 0.5))
+		lines.append('[sub_resource type="StandardMaterial3D" id="Material_1"]')
+		lines.append('albedo_color = Color(%f, %f, %f, 1)' % [mat_col.r, mat_col.g, mat_col.b])
+		lines.append('roughness = 0.85')
+		lines.append('metallic = 0.0')
+		lines.append('')
+
+	lines.append('[sub_resource type="BoxShape3D" id="BoxShape_1"]')
+	lines.append('size = Vector3(%f, %f, %f)' % [col_size.x, col_size.y, col_size.z])
+	lines.append('')
+	lines.append('[node name="' + file_id + '" type="RigidBody3D" node_paths=PackedStringArray("mesh", "collision") groups=["Item"]]')
+	lines.append('collision_layer = 4')
+	lines.append('collision_mask = 29')
+	lines.append('angular_damp = 5.0')
+	lines.append('linear_damp = 2.0')
+	lines.append('continuous_cd = true')
+	lines.append('physics_material_override = ExtResource("1")')
+	lines.append('script = ExtResource("2")')
+	lines.append('slotData = SubResource("SlotData_1")')
+	lines.append('mesh = NodePath("Mesh")')
+	lines.append('collision = NodePath("Collision")')
+	lines.append('')
+	lines.append('[node name="Mesh" type="MeshInstance3D" parent="."]')
+	lines.append('layers = 4')
+	lines.append('visibility_range_end = 25.0')
+	lines.append('cast_shadow = 0')
+	if custom_mesh:
+		# Material is baked into the mesh surface — no override needed
+		lines.append('mesh = ExtResource("5")')
+	else:
+		lines.append('mesh = SubResource("BoxMesh_1")')
+		lines.append('surface_material_override/0 = SubResource("Material_1")')
+	lines.append('')
+	lines.append('[node name="Collision" type="CollisionShape3D" parent="."]')
+	var half_y: float = col_size.y * 0.5
+	lines.append('transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, %f, 0)' % half_y)
+	lines.append('shape = SubResource("BoxShape_1")')
+	lines.append('')
+	return "\n".join(lines)
+
+# ── OBJ Parser (same as CashSystem) ──────────────────────────────────────────
+
+func _parse_obj(path: String) -> ArrayMesh:
+	var file: FileAccess = FileAccess.open(path, FileAccess.READ)
+	if not file:
+		return null
+	var v: Array = []
+	var vt: Array = []
+	var vn: Array = []
+	# Single surface — all usemtl groups merged so surface_material_override/0 covers everything
+	var surfs: Array = [[]]
+	while not file.eof_reached():
+		var line: String = file.get_line().strip_edges()
+		if line.begins_with("v "):
+			var p: PackedStringArray = line.split(" ", false)
+			v.append(Vector3(float(p[1]), float(p[2]), float(p[3])))
+		elif line.begins_with("vt "):
+			var p: PackedStringArray = line.split(" ", false)
+			vt.append(Vector2(float(p[1]), float(p[2])))
+		elif line.begins_with("vn "):
+			var p: PackedStringArray = line.split(" ", false)
+			vn.append(Vector3(float(p[1]), float(p[2]), float(p[3])))
+		elif line.begins_with("f "):
+			var parts: PackedStringArray = line.split(" ", false)
+			for i: int in range(3, parts.size()):
+				for idx: int in [1, i, i - 1]:
+					surfs[0].append(parts[idx])
+	file.close()
+	# Bottom-align: center X/Z but put the bottom of the mesh at Y=0
+	# so the model sits on the ground matching the collision shape offset
+	if v.size() > 0:
+		var lo: Vector3 = v[0]
+		var hi: Vector3 = v[0]
+		for vert: Vector3 in v:
+			lo = lo.min(vert)
+			hi = hi.max(vert)
+		var offset: Vector3 = Vector3((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5)
+		for i: int in v.size():
+			v[i] -= offset
+	var mesh: ArrayMesh = ArrayMesh.new()
+	for surf: Array in surfs:
+		if surf.size() == 0:
+			continue
+		var st: SurfaceTool = SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for face_str: String in surf:
+			var c: PackedStringArray = face_str.split("/")
+			if c.size() > 2 and c[2] != "":
+				st.set_normal(vn[int(c[2]) - 1])
+			if c.size() > 1 and c[1] != "":
+				var uv: Vector2 = vt[int(c[1]) - 1]
+				st.set_uv(Vector2(uv.x, 1.0 - uv.y))
+			st.add_vertex(v[int(c[0]) - 1])
+		st.generate_tangents()
+		mesh = st.commit(mesh)
+	return mesh

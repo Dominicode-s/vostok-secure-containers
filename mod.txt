@@ -1,0 +1,10 @@
+[mod]
+name="Secure Container"
+id="secure-container"
+version="1.0.0"
+priority=0
+[autoload]
+SecureContainerConfig="res://mods/SecureContainer/Config.gd"
+SecureContainer="res://mods/SecureContainer/Main.gd"
+[updates]
+modworkshop=56154
