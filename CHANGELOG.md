@@ -1,5 +1,17 @@
 # Secure Container — Changelog
 
+## v1.0.3
+
+### Bug Fixes
+- **Guns lose attachments / magazines when secured** — firearm state (attachments, magazine contents, chamber, casing, fire mode, state) is now preserved through the pouch. Previously the session save only persisted `amount` and `condition`, and since the panel reloads from session on every open, attachments were silently stripped.
+- **Item duplication when inventory is full** — clicking a pouch item with a full inventory no longer drops a second copy to the ground. The item now stays in the pouch (matching the existing "Inventory full — can't return" behaviour) instead of `AutoPlace` dropping it while the pouch also kept it.
+- **Clicks passing through the pouch panel** — clicks on the pouch panel no longer also grab or equip the inventory item visually behind it. The Interface hover lookup is blocked while the cursor is inside the panel rect.
+
+### Features
+- **Movable pouch panel** — click and drag the panel's header bar to reposition it anywhere on screen. Position persists across panel open/close, scene changes, and the main menu (saved to `SecureContainer_session.json`).
+
+---
+
 ## v1.0.2
 
 ### Bug Fixes
