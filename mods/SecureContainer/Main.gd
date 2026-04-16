@@ -73,6 +73,12 @@ var _panel_injected: bool = false
 var _panel_open: bool = false     # player must double-click the pouch to open
 var _in_transition: bool = false  # true after scene change until pouch confirmed back in slot
 
+# Panel drag/position state
+var _panel_position: Vector2 = Vector2.ZERO
+var _has_custom_position: bool = false
+var _panel_dragging: bool = false
+var _drag_offset: Vector2 = Vector2.ZERO
+
 # Runtime container state
 var _equipped_file: String = ""          # Which tier is equipped ("" = none)
 var _contents: Array = []               # Array of SlotData or null per slot
@@ -330,6 +336,22 @@ func _process(_delta: float) -> void:
 # ── Input — shift+click or drag-and-drop to secure ───────────────────────────
 
 func _input(event: InputEvent) -> void:
+	# Panel drag — capture motion + release globally so fast drags that leave
+	# the header rect don't get stuck.
+	if _panel_dragging:
+		if event is InputEventMouseMotion:
+			_update_drag_position((event as InputEventMouseMotion).global_position)
+			return
+		if event is InputEventMouseButton:
+			var rel: InputEventMouseButton = event as InputEventMouseButton
+			if rel.button_index == MOUSE_BUTTON_LEFT and not rel.pressed:
+				_panel_dragging = false
+				_panel_position = _secure_panel.position
+				_has_custom_position = true
+				_save_session()
+				get_viewport().set_input_as_handled()
+				return
+
 	if not (event is InputEventMouseButton):
 		return
 	var mbe: InputEventMouseButton = event as InputEventMouseButton
@@ -564,11 +586,26 @@ func _inject_secure_panel(iface: Node, tier_file: String) -> void:
 	var vbox: VBoxContainer = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 6)
 
-	var header: Label = Label.new()
-	header.text = "[ %s ]" % t.name.to_upper()
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	header.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
-	header.add_theme_font_size_override("font_size", 10)
+	# Draggable header — click and drag to move the panel anywhere on screen.
+	var header: Panel = Panel.new()
+	header.custom_minimum_size = Vector2(0, 18)
+	header.mouse_filter = Control.MOUSE_FILTER_STOP
+	header.mouse_default_cursor_shape = Control.CURSOR_DRAG
+	var header_bg: StyleBoxFlat = StyleBoxFlat.new()
+	header_bg.bg_color = Color(0.14, 0.14, 0.14)
+	header_bg.border_color = Color(0.32, 0.32, 0.32)
+	header_bg.border_width_bottom = 1
+	header.add_theme_stylebox_override("panel", header_bg)
+	var header_label: Label = Label.new()
+	header_label.text = "[ %s ]" % t.name.to_upper()
+	header_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	header_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	header_label.add_theme_color_override("font_color", Color(0.72, 0.72, 0.72))
+	header_label.add_theme_font_size_override("font_size", 10)
+	header_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	header_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	header.add_child(header_label)
+	header.gui_input.connect(_on_header_gui_input)
 	vbox.add_child(header)
 
 	_slot_grid = GridContainer.new()
@@ -601,27 +638,27 @@ func _inject_secure_panel(iface: Node, tier_file: String) -> void:
 func _position_secure_panel() -> void:
 	if not _secure_panel or not is_instance_valid(_secure_panel):
 		return
-	if not _pouch_slot or not is_instance_valid(_pouch_slot):
-		return
-
-	# Convert the Pouch slot's screen rect into the Interface's local space
 	var iface: Node = _get_interface()
 	if not iface:
 		return
 
-	var slot_global: Rect2 = _pouch_slot.get_global_rect()
-	var iface_inv: Transform2D = iface.get_global_transform().affine_inverse()
-	var panel_pos: Vector2 = iface_inv * slot_global.position
-
-	# Place the panel to the RIGHT of the pouch slot, top-aligned with it
-	panel_pos.x += slot_global.size.x + 8.0
-
-	# Clamp so the panel stays within the Interface rect
 	var iface_size: Vector2 = iface.get_rect().size
 	var panel_size: Vector2 = _secure_panel.get_combined_minimum_size()
+
+	var panel_pos: Vector2
+	if _has_custom_position:
+		panel_pos = _panel_position
+	else:
+		if not _pouch_slot or not is_instance_valid(_pouch_slot):
+			return
+		# Default: to the RIGHT of the pouch slot, top-aligned with it
+		var slot_global: Rect2 = _pouch_slot.get_global_rect()
+		var iface_inv: Transform2D = iface.get_global_transform().affine_inverse()
+		panel_pos = iface_inv * slot_global.position
+		panel_pos.x += slot_global.size.x + 8.0
+
 	panel_pos.x = clamp(panel_pos.x, 4.0, iface_size.x - panel_size.x - 4.0)
 	panel_pos.y = clamp(panel_pos.y, 4.0, iface_size.y - panel_size.y - 4.0)
-
 	_secure_panel.position = panel_pos
 
 func _build_slot_widget(index: int) -> Control:
@@ -664,6 +701,40 @@ func _on_slot_gui_input(event: InputEvent, index: int) -> void:
 	if mbe.pressed and mbe.button_index == MOUSE_BUTTON_LEFT:
 		if _contents[index] != null:
 			_return_to_inventory(index)
+
+func _on_header_gui_input(event: InputEvent) -> void:
+	if not (event is InputEventMouseButton):
+		return
+	var mbe: InputEventMouseButton = event as InputEventMouseButton
+	if mbe.button_index != MOUSE_BUTTON_LEFT or not mbe.pressed:
+		return
+	# Motion + release are handled globally in _input so fast drags don't
+	# break when the cursor leaves the header's small rect.
+	_panel_dragging = true
+	_drag_offset = mbe.global_position - _secure_panel.global_position
+	get_viewport().set_input_as_handled()
+
+func _update_drag_position(global_pos: Vector2) -> void:
+	var iface: Node = _get_interface()
+	if not iface or not _secure_panel or not is_instance_valid(_secure_panel):
+		return
+	var target_global: Vector2 = global_pos - _drag_offset
+	var local: Vector2 = iface.get_global_transform().affine_inverse() * target_global
+	var iface_size: Vector2 = iface.get_rect().size
+	var panel_size: Vector2 = _secure_panel.get_rect().size
+	local.x = clamp(local.x, 4.0, iface_size.x - panel_size.x - 4.0)
+	local.y = clamp(local.y, 4.0, iface_size.y - panel_size.y - 4.0)
+	_secure_panel.position = local
+
+# Used by Interface.gd override to null out Hover state when cursor is over our
+# panel — prevents clicks passing through to inventory items behind the panel.
+func _mouse_over_panel() -> bool:
+	if not _panel_injected or not _secure_panel or not is_instance_valid(_secure_panel):
+		return false
+	var vp: Viewport = _secure_panel.get_viewport()
+	if not vp:
+		return false
+	return _secure_panel.get_global_rect().has_point(vp.get_mouse_position())
 
 func _on_slot_hover(panel: Control, entered: bool) -> void:
 	_apply_slot_style(panel, entered and _contents[_slot_grid.get_children().find(panel)] != null)
@@ -754,7 +825,9 @@ func _return_to_inventory(slot_index: int) -> void:
 	if sd.itemData.stackable:
 		placed = iface.AutoStack(sd, iface.inventoryGrid)
 	if not placed:
-		placed = iface.Create(sd, iface.inventoryGrid, true)
+		# useDrop=false — if inventory is full, leave item in pouch rather than
+		# letting AutoPlace drop it to the world (which was double-spawning it).
+		placed = iface.Create(sd, iface.inventoryGrid, false)
 
 	if placed:
 		_contents[slot_index] = null
@@ -830,20 +903,79 @@ func _drop_single_to_world(sd: SlotData) -> void:
 
 # ── Session Persistence (survives scene changes and main menu) ────────────────
 
+# Serialize a SlotData to a JSON-safe dict. Preserves attachments (nested),
+# magazine/container contents (storage), and all firearm state — without this
+# guns lose their scope/grip/magazine when secured then re-loaded.
+func _serialize_slot_data(sd: SlotData) -> Variant:
+	if sd == null or sd.itemData == null:
+		return null
+	var data: Dictionary = {
+		"file":      sd.itemData.file,
+		"res_path":  sd.itemData.resource_path,
+		"amount":    sd.amount,
+		"condition": sd.condition,
+		"position":  sd.position,
+		"mode":      sd.mode,
+		"zoom":      sd.zoom,
+		"chamber":   sd.chamber,
+		"casing":    sd.casing,
+		"state":     sd.state,
+		"nested":    [],
+		"storage":   [],
+	}
+	for att: ItemData in sd.nested:
+		if att == null:
+			continue
+		data.nested.append({"file": att.file, "res_path": att.resource_path})
+	for sub: SlotData in sd.storage:
+		data.storage.append(_serialize_slot_data(sub))
+	return data
+
+func _deserialize_slot_data(entry: Variant) -> SlotData:
+	if entry == null or not (entry is Dictionary):
+		return null
+	var item_res: ItemData = _resolve_item_entry(entry)
+	if not item_res:
+		push_warning("[SecureContainer] Could not restore item: %s" % entry.get("file", "?"))
+		return null
+	var sd: SlotData = SlotData.new()
+	sd.itemData = item_res
+	sd.amount    = entry.get("amount", 1)
+	sd.condition = entry.get("condition", 100)
+	sd.position  = entry.get("position", 0)
+	sd.mode      = entry.get("mode", 1)
+	sd.zoom      = entry.get("zoom", 1)
+	sd.chamber   = entry.get("chamber", false)
+	sd.casing    = entry.get("casing", false)
+	sd.state     = entry.get("state", "")
+	for n_entry: Variant in entry.get("nested", []):
+		if n_entry == null or not (n_entry is Dictionary):
+			continue
+		var n_item: ItemData = _resolve_item_entry(n_entry)
+		if n_item:
+			sd.nested.append(n_item)
+	for s_entry: Variant in entry.get("storage", []):
+		var sub: SlotData = _deserialize_slot_data(s_entry)
+		if sub:
+			sd.storage.append(sub)
+	return sd
+
+func _resolve_item_entry(entry: Dictionary) -> ItemData:
+	var res_path: String = entry.get("res_path", "")
+	if res_path != "" and ResourceLoader.exists(res_path):
+		var r: Resource = ResourceLoader.load(res_path, "ItemData", ResourceLoader.CACHE_MODE_REUSE)
+		if r and r is ItemData:
+			return r
+	return _resolve_item_data(entry.get("file", ""))
+
 func _save_session() -> void:
 	if _equipped_file == "":
 		return
 	var data: Dictionary = {"tier": _equipped_file, "items": []}
+	if _has_custom_position:
+		data.panel_pos = [_panel_position.x, _panel_position.y]
 	for sd: Variant in _contents:
-		if sd == null:
-			data.items.append(null)
-		else:
-			data.items.append({
-				"file":     sd.itemData.file,
-				"res_path": sd.itemData.resource_path,
-				"amount":   sd.amount,
-				"condition": sd.condition,
-			})
+		data.items.append(_serialize_slot_data(sd))
 	var f: FileAccess = FileAccess.open(SESSION_FILE, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data))
@@ -861,29 +993,16 @@ func _load_session() -> void:
 		return
 	if parsed.get("tier", "") != _equipped_file:
 		return  # Session is for a different tier — ignore
+	if "panel_pos" in parsed:
+		var arr: Array = parsed.panel_pos
+		if arr.size() == 2:
+			_panel_position = Vector2(float(arr[0]), float(arr[1]))
+			_has_custom_position = true
 	var items_raw: Array = parsed.get("items", [])
 	var slot_count: int = _slot_count(_equipped_file)
 	_contents.resize(slot_count)
 	for i: int in min(items_raw.size(), slot_count):
-		var entry: Variant = items_raw[i]
-		if entry == null:
-			continue
-		# Prefer direct resource path load — avoids searching gameData which only
-		# contains items the player currently has, not all item definitions.
-		var item_res: ItemData = null
-		var res_path: String = entry.get("res_path", "")
-		if res_path != "" and ResourceLoader.exists(res_path):
-			item_res = ResourceLoader.load(res_path, "ItemData", ResourceLoader.CACHE_MODE_REUSE)
-		if not item_res:
-			item_res = _resolve_item_data(entry.get("file", ""))
-		if not item_res:
-			push_warning("[SecureContainer] Could not restore item: %s" % entry.get("file", "?"))
-			continue
-		var sd: SlotData = SlotData.new()
-		sd.itemData = item_res
-		sd.amount = entry.get("amount", 1)
-		sd.condition = entry.get("condition", 100)
-		_contents[i] = sd
+		_contents[i] = _deserialize_slot_data(items_raw[i])
 
 func _delete_session() -> void:
 	if FileAccess.file_exists(SESSION_FILE):
@@ -902,14 +1021,7 @@ func _save_contents() -> void:
 	}
 
 	for sd: Variant in _contents:
-		if sd == null:
-			data.items.append(null)
-		else:
-			data.items.append({
-				"file":      sd.itemData.file,
-				"amount":    sd.amount,
-				"condition": sd.condition,
-			})
+		data.items.append(_serialize_slot_data(sd))
 
 	var f: FileAccess = FileAccess.open(SAVE_FILE, FileAccess.WRITE)
 	if f:
@@ -949,19 +1061,7 @@ func _try_restore() -> void:
 		var slot_count: int = _slot_count(tier_file)
 		_contents.resize(slot_count)
 		for i: int in min(items_raw.size(), slot_count):
-			var entry: Variant = items_raw[i]
-			if entry == null:
-				continue
-			var file_id: String = entry.get("file", "")
-			var item_res: ItemData = _resolve_item_data(file_id)
-			if not item_res:
-				push_warning("[SecureContainer] Could not find ItemData for file: %s" % file_id)
-				continue
-			var sd: SlotData = SlotData.new()
-			sd.itemData = item_res
-			sd.amount = entry.get("amount", 1)
-			sd.condition = entry.get("condition", 100)
-			_contents[i] = sd
+			_contents[i] = _deserialize_slot_data(items_raw[i])
 		# Temporarily set _equipped_file so _save_session writes the correct tier
 		var prev_file: String = _equipped_file
 		_equipped_file = tier_file

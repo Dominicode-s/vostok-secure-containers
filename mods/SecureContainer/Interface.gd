@@ -1,5 +1,37 @@
 extends "res://Scripts/Interface.gd"
 
+# Override the five hover getters so that when the mouse is over our secure
+# container panel, the inventory items behind it don't register as hovered.
+# Without this, clicks on the panel would also Grab/Equip the item underneath.
+func GetHoverItem():
+	if _blocked_by_sc_panel():
+		return null
+	return super.GetHoverItem()
+
+func GetHoverGrid():
+	if _blocked_by_sc_panel():
+		return null
+	return super.GetHoverGrid()
+
+func GetHoverSlot():
+	if _blocked_by_sc_panel():
+		return null
+	return super.GetHoverSlot()
+
+func GetHoverEquipment():
+	if _blocked_by_sc_panel():
+		return null
+	return super.GetHoverEquipment()
+
+func GetHoverInfo():
+	if _blocked_by_sc_panel():
+		return null
+	return super.GetHoverInfo()
+
+func _blocked_by_sc_panel() -> bool:
+	var sc_mod: Node = Engine.get_meta("SecureContainer", null)
+	return sc_mod != null and sc_mod._mouse_over_panel()
+
 # Override Drop to handle SecureContainer items that aren't in Database.gd
 func Drop(target) -> void:
 	var scene: PackedScene = _get_sc_pickup_scene(target)
