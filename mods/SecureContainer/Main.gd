@@ -1080,13 +1080,32 @@ func _try_restore() -> void:
 		print("[SecureContainer] Restored %s + %d secured items (queued re-equip)" % [tier_file, item_count])
 
 func _resolve_item_data(file_id: String) -> ItemData:
+	if file_id == "":
+		return null
 	if file_id in _item_data:
 		return _item_data[file_id]
-	# Search game's global item database
-	if gameData and "items" in gameData:
-		for item: Variant in gameData.items:
+	# Database autoload — where vanilla items and most mods register
+	var db: Node = get_node_or_null("/root/Database")
+	if db and "master" in db and db.master and "items" in db.master:
+		for item: Variant in db.master.items:
 			if item and item.file == file_id:
 				return item
+	# Loot master — Cash System (and similar mods) register their ItemData here
+	# without touching Database. Without this fallback, cash secured via
+	# shift-click couldn't be re-resolved on panel reopen and vanished because
+	# its in-memory ItemData carries no resource_path.
+	if ResourceLoader.exists("res://Loot/LT_Master.tres"):
+		var lt: Resource = load("res://Loot/LT_Master.tres")
+		if lt and "items" in lt:
+			for item: Variant in lt.items:
+				if item and item.file == file_id:
+					return item
+	# Last resort — any live Item node in the scene tree with a matching file.
+	# Catches items that only exist as runtime instances (no registry entry).
+	for node: Node in get_tree().get_nodes_in_group("Item"):
+		if "slotData" in node and node.slotData and node.slotData.itemData \
+				and node.slotData.itemData.file == file_id:
+			return node.slotData.itemData
 	return null
 
 # ── Script Override ───────────────────────────────────────────────────────────

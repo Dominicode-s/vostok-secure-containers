@@ -1,5 +1,10 @@
 # Secure Container — Changelog
 
+## v1.0.4
+
+### Bug Fixes
+- **Items from other mods (e.g. Cash System) disappeared after shift-clicking them into a pouch** — `_resolve_item_data` only checked our own internal dict and a `gameData.items` field that doesn't exist on `GameData`, so any item whose in-memory `ItemData` instance carried no `resource_path` (common when a mod creates an `ItemData` via `ResourceSaver.save` without a subsequent reload) couldn't be re-resolved on panel reopen and the session-loaded slot became null. The lookup now also searches `Database.master.items`, `res://Loot/LT_Master.tres`, and — as a last resort — any live `Item`-group node in the scene tree, so cash and any similarly-registered mod item survive a panel close/reopen.
+
 ## v1.0.3
 
 ### Bug Fixes
