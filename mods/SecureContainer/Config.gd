@@ -14,6 +14,9 @@ var slots_small: int        = 2
 var slots_medium: int       = 4
 var slots_large: int        = 6
 var spawn_in_loot: bool     = true
+var allow_weapons: bool     = true
+var weapons_pistol_only: bool = false
+var cash_bridge: bool       = true
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -27,7 +30,9 @@ func _ready() -> void:
 func _build_defaults() -> void:
 	_config.set_value("Category", "Behaviour",       {"menu_pos": 1})
 	_config.set_value("Category", "Container Sizes", {"menu_pos": 2})
-	_config.set_value("Category", "Loot",            {"menu_pos": 3})
+	_config.set_value("Category", "Restrictions",    {"menu_pos": 3})
+	_config.set_value("Category", "Integrations",    {"menu_pos": 4})
+	_config.set_value("Category", "Loot",            {"menu_pos": 5})
 
 	_config.set_value("Keycode", "open_button", {
 		"name":         "Open Button",
@@ -82,6 +87,33 @@ func _build_defaults() -> void:
 		"maxRange": 9,
 	})
 
+	_config.set_value("Bool", "allow_weapons", {
+		"name":     "Allow Weapons",
+		"tooltip":  "Allow firearms to be placed inside the container. Disable to restrict the pouch to ammo, meds, cash, and similar items.",
+		"category": "Restrictions",
+		"menu_pos": 1,
+		"default":  true,
+		"value":    true,
+	})
+
+	_config.set_value("Bool", "weapons_pistol_only", {
+		"name":     "Pistols Only",
+		"tooltip":  "When weapons are allowed, restrict them to pistols only. Rifles, shotguns, and SMGs will be rejected.",
+		"category": "Restrictions",
+		"menu_pos": 2,
+		"default":  false,
+		"value":    false,
+	})
+
+	_config.set_value("Bool", "cash_bridge", {
+		"name":     "Cash System Bridge",
+		"tooltip":  "When trading, treat cash stored in the pouch as spendable. Sell proceeds refill the pouch afterwards. Requires Cash System mod. NOTE: cash in transit is briefly held in inventory while trading — it is unprotected from death during that window.",
+		"category": "Integrations",
+		"menu_pos": 1,
+		"default":  true,
+		"value":    true,
+	})
+
 	_config.set_value("Bool", "spawn_in_loot", {
 		"name":     "Spawn in Loot",
 		"tooltip":  "Allow secure containers to appear in world loot pools.",
@@ -113,6 +145,9 @@ func _apply() -> void:
 	slots_medium     = int(_config.get_value("Int",  "slots_medium",    {}).get("value", 4))
 	slots_large      = int(_config.get_value("Int",  "slots_large",     {}).get("value", 6))
 	spawn_in_loot    = _config.get_value("Bool", "spawn_in_loot",   {}).get("value", true)
+	allow_weapons       = _config.get_value("Bool", "allow_weapons",       {}).get("value", true)
+	weapons_pistol_only = _config.get_value("Bool", "weapons_pistol_only", {}).get("value", false)
+	cash_bridge         = _config.get_value("Bool", "cash_bridge",         {}).get("value", true)
 
 func _register_mcm() -> void:
 	if not ResourceLoader.exists("res://ModConfigurationMenu/Scripts/Doink Oink/MCM_Helpers.tres"):

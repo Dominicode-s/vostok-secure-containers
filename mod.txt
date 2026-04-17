@@ -1,7 +1,7 @@
 [mod]
 name="Secure Container"
 id="secure-container"
-version="1.0.4"
+version="1.0.5"
 priority=0
 [autoload]
 SecureContainerConfig="res://mods/SecureContainer/Config.gd"

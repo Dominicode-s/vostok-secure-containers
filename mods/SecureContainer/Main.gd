@@ -72,6 +72,11 @@ var _slot_injected: bool = false
 var _panel_injected: bool = false
 var _panel_open: bool = false     # player must double-click the pouch to open
 var _in_transition: bool = false  # true after scene change until pouch confirmed back in slot
+# Grace period — level transitions briefly null the pouch item before the new
+# scene's inventory rebuilds. Without this buffer the unequip-drop path would
+# fire and wipe stored items (reports of 5000€ cash vanishing on transition).
+const EMPTY_SLOT_GRACE_FRAMES: int = 45
+var _empty_slot_frames: int = 0
 
 # Panel drag/position state
 var _panel_position: Vector2 = Vector2.ZERO
@@ -83,6 +88,13 @@ var _drag_offset: Vector2 = Vector2.ZERO
 var _equipped_file: String = ""          # Which tier is equipped ("" = none)
 var _contents: Array = []               # Array of SlotData or null per slot
 var _pending_equip_tier: String = ""    # Tier to re-equip after respawn
+
+# Cash System bridge — while trading, pouch cash is moved into inventory so
+# CashMain's CountCash/RemoveCash pick it up for purchases. Reclaimed at trade
+# close, with any profit stacking onto the pouch slots first.
+var _was_trading: bool = false
+var _trade_bridge_amount: int = 0
+var _bridged_cash_slots: Array[int] = []   # pouch indices that held cash
 
 # ── Config Helper ────────────────────────────────────────────────────────────
 
@@ -296,6 +308,12 @@ func _process(_delta: float) -> void:
 	# Death detection — save contents before the game wipes inventory
 	if gameData.isDead:
 		if not _was_dead:
+			# If we died mid-trade, the bridged cash is sitting in the
+			# inventory that's about to be wiped. Restore the cash slots in
+			# _contents before the death save so the pouch recovers it on
+			# respawn via _try_restore.
+			if _trade_bridge_amount > 0:
+				_restore_bridged_cash_in_memory()
 			_save_contents()
 			_was_dead = true
 	else:
@@ -324,6 +342,8 @@ func _process(_delta: float) -> void:
 	var iface: Node = _get_interface()
 	if not iface:
 		return
+
+	_update_cash_bridge()
 
 	var inv: Node = iface.get_node_or_null("Inventory")
 	if inv and inv.visible:
@@ -369,6 +389,11 @@ func _input(event: InputEvent) -> void:
 	if is_open_press:
 		if _pouch_slot and is_instance_valid(_pouch_slot):
 			if _pouch_slot.get_global_rect().has_point(mbe.global_position):
+				# Panel can't be opened while the cash bridge has pouch cash
+				# in inventory — the slots are emptied pending reclaim.
+				if _was_trading and _trade_bridge_amount > 0:
+					get_viewport().set_input_as_handled()
+					return
 				_panel_open = not _panel_open
 				if _panel_open:
 					call_deferred("_inject_secure_panel", iface, _equipped_file)
@@ -522,6 +547,7 @@ func _poll_equipped_state(iface: Node) -> void:
 
 	if found_file != "":
 		_in_transition = false  # Pouch confirmed in slot — scene is stable
+		_empty_slot_frames = 0
 
 	if found_file == _equipped_file:
 		# Same tier — reinject panel only if player had it open
@@ -534,6 +560,13 @@ func _poll_equipped_state(iface: Node) -> void:
 	if found_file == "" and iface.get("itemDragged") != null:
 		return
 
+	# Grace period — ignore transient empty-slot readings caused by level
+	# transitions or inventory reloads. Only act on a sustained empty slot.
+	if found_file == "" and _equipped_file != "":
+		_empty_slot_frames += 1
+		if _empty_slot_frames < EMPTY_SLOT_GRACE_FRAMES:
+			return
+
 	# Tier changed — full reset
 	_equipped_file = found_file
 	_cleanup_panel()
@@ -542,6 +575,12 @@ func _poll_equipped_state(iface: Node) -> void:
 		var slot_count: int = _slot_count(found_file)
 		if _contents.size() != slot_count:
 			_contents.resize(slot_count)
+		# Eagerly load session contents — covers the case where the pouch was
+		# re-equipped via level transition and the player hasn't opened the
+		# panel yet. Without this, _load_session is deferred until panel open
+		# and any unequip path in between would drop/lose items.
+		if _contents.filter(func(s: Variant) -> bool: return s != null).is_empty():
+			_load_session()
 		# Don't auto-open — wait for player middle-click
 		emit_signal("pouch_equipped", found_file)
 	else:
@@ -780,7 +819,24 @@ func _cleanup_panel() -> void:
 
 # ── Item Transfer ─────────────────────────────────────────────────────────────
 
+func _is_item_allowed(item_data: ItemData) -> bool:
+	if item_data == null:
+		return false
+	var cfg: Node = _cfg()
+	if cfg == null:
+		return true
+	if item_data.type != "Weapon":
+		return true
+	if not cfg.allow_weapons:
+		return false
+	if cfg.weapons_pistol_only and item_data.subtype != "Pistol":
+		return false
+	return true
+
 func _secure_dragged(dragged: Node, iface: Node, slot_index: int) -> void:
+	if not _is_item_allowed(dragged.slotData.itemData):
+		print("[SecureContainer] Rejected (restricted): %s" % dragged.slotData.itemData.name)
+		return
 	# Item is already floating (picked from grid), just copy data, free it, reset drag
 	var sd: SlotData = SlotData.new()
 	sd.Update(dragged.slotData)
@@ -794,6 +850,9 @@ func _secure_dragged(dragged: Node, iface: Node, slot_index: int) -> void:
 
 func _move_to_secure(item: Node, grid: Node, slot_index: int) -> void:
 	if _contents[slot_index] != null:
+		return
+	if not _is_item_allowed(item.slotData.itemData):
+		print("[SecureContainer] Rejected (restricted): %s" % item.slotData.itemData.name)
 		return
 
 	# Copy slot data before removing from inventory
@@ -901,6 +960,144 @@ func _drop_single_to_world(sd: SlotData) -> void:
 		pickup.Unfreeze()
 	pickup.linear_velocity = (base_dir + spread.normalized() * 0.3) * 2.0
 
+# ── Cash System Bridge ───────────────────────────────────────────────────────
+#
+# Goal: pouch cash should count as spendable while trading, and sale proceeds
+# should refill the pouch (so a pouch-carried wallet acts like your wallet).
+#
+# Approach: at trade open we move the pouch cash amount into inventory via
+# CashMain.AddCash — the cash slots in _contents are nulled and their indices
+# cached. CashMain then sees the total for buying. The panel is forced closed
+# so empty cash slots can't be back-filled with other items mid-trade. On
+# trade close we pull inventory cash back into the cached slots (up to each
+# slot's maxAmount); anything left over stays in inventory as profit / change.
+#
+# Death safety: if the player dies mid-trade, _process sees isDead and calls
+# _restore_bridged_cash_in_memory before _save_contents so the death-save
+# file has the original cash slots populated again. The inventory mirror is
+# wiped by the vanilla death path (same behaviour as any inventory cash).
+
+const CASH_FILE: String = "Cash"
+
+func _update_cash_bridge() -> void:
+	var cfg: Node = _cfg()
+	if cfg == null or not cfg.cash_bridge:
+		if _was_trading:
+			_reclaim_cash_to_pouch()
+			_was_trading = false
+		return
+	var trading: bool = bool(gameData.isTrading) if "isTrading" in gameData else false
+	if trading and not _was_trading:
+		_bridge_pouch_cash_to_inventory()
+		_was_trading = true
+	elif not trading and _was_trading:
+		_reclaim_cash_to_pouch()
+		_was_trading = false
+
+func _count_pouch_cash() -> int:
+	var total: int = 0
+	for sd: Variant in _contents:
+		if sd and sd.itemData and sd.itemData.file == CASH_FILE:
+			total += int(sd.amount)
+	return total
+
+func _bridge_pouch_cash_to_inventory() -> void:
+	_trade_bridge_amount = 0
+	_bridged_cash_slots.clear()
+	if _equipped_file == "" or _contents.is_empty():
+		return
+	var cash_mod: Node = Engine.get_meta("CashMain", null)
+	if cash_mod == null or not cash_mod.has_method("AddCash"):
+		return
+	var total: int = _count_pouch_cash()
+	if total <= 0:
+		return
+	# Close the panel so the (now-empty) cash slots can't receive other items
+	# mid-trade. Items placed there would block reclamation.
+	if _panel_open:
+		_panel_open = false
+		_cleanup_panel()
+	# Persist the pre-bridge pouch state so that a crash mid-trade recovers
+	# the original pouch cash rather than the nulled bridged slots. Death
+	# during trade is handled separately in _process so _save_contents runs
+	# after _restore_bridged_cash_in_memory.
+	_save_session()
+	if not cash_mod.AddCash(total):
+		return
+	_trade_bridge_amount = total
+	for i: int in _contents.size():
+		var sd: SlotData = _contents[i]
+		if sd and sd.itemData and sd.itemData.file == CASH_FILE:
+			_bridged_cash_slots.append(i)
+			_contents[i] = null
+
+func _restore_bridged_cash_in_memory() -> void:
+	var cash_mod: Node = Engine.get_meta("CashMain", null)
+	if cash_mod == null or cash_mod.cash_item_data == null:
+		return
+	var cash_data: ItemData = cash_mod.cash_item_data
+	var max_amt: int = int(cash_data.maxAmount) if cash_data.maxAmount > 0 else 99999
+	var remaining: int = _trade_bridge_amount
+	for idx: int in _bridged_cash_slots:
+		if remaining <= 0:
+			break
+		if idx >= _contents.size() or _contents[idx] != null:
+			continue
+		var take: int = min(remaining, max_amt)
+		var sd: SlotData = SlotData.new()
+		sd.itemData = cash_data
+		sd.amount = take
+		_contents[idx] = sd
+		remaining -= take
+	_trade_bridge_amount = 0
+	_bridged_cash_slots.clear()
+	_was_trading = false
+
+func _reclaim_cash_to_pouch() -> void:
+	var bridged: int = _trade_bridge_amount
+	var slots: Array = _bridged_cash_slots.duplicate()
+	_trade_bridge_amount = 0
+	_bridged_cash_slots.clear()
+	if bridged <= 0:
+		return
+	var cash_mod: Node = Engine.get_meta("CashMain", null)
+	if cash_mod == null or not cash_mod.has_method("CountCash") or cash_mod.cash_item_data == null:
+		return
+	var inv_cash: int = int(cash_mod.CountCash())
+	if inv_cash <= 0:
+		_save_session()
+		_refresh_slots()
+		return
+	var cash_data: ItemData = cash_mod.cash_item_data
+	var max_amt: int = int(cash_data.maxAmount) if cash_data.maxAmount > 0 else 99999
+	# Only reclaim into the pouch slots we originally emptied; if a slot got
+	# occupied somehow, fall back to inventory for that share.
+	var free_slots: Array[int] = []
+	for idx: int in slots:
+		if idx < _contents.size() and _contents[idx] == null:
+			free_slots.append(idx)
+	var pouch_capacity: int = max_amt * free_slots.size()
+	var to_pouch: int = min(inv_cash, pouch_capacity)
+	if to_pouch > 0:
+		if not cash_mod.RemoveCash(to_pouch):
+			to_pouch = int(cash_mod.CountCash())
+			if to_pouch > 0 and not cash_mod.RemoveCash(to_pouch):
+				return
+	var remaining: int = to_pouch
+	for idx: int in free_slots:
+		if remaining <= 0:
+			break
+		var take: int = min(remaining, max_amt)
+		var sd: SlotData = SlotData.new()
+		sd.itemData = cash_data
+		sd.amount = take
+		_contents[idx] = sd
+		remaining -= take
+	if remaining > 0:
+		cash_mod.AddCash(remaining)
+	_save_session()
+	_refresh_slots()
+
 # ── Session Persistence (survives scene changes and main menu) ────────────────
 
 # Serialize a SlotData to a JSON-safe dict. Preserves attachments (nested),
@@ -940,11 +1137,13 @@ func _deserialize_slot_data(entry: Variant) -> SlotData:
 		return null
 	var sd: SlotData = SlotData.new()
 	sd.itemData = item_res
-	sd.amount    = entry.get("amount", 1)
-	sd.condition = entry.get("condition", 100)
-	sd.position  = entry.get("position", 0)
-	sd.mode      = entry.get("mode", 1)
-	sd.zoom      = entry.get("zoom", 1)
+	# JSON.parse_string returns all numbers as floats, so `str(amount)` showed
+	# "30.0" on restored stackables. Coerce back to int for every numeric field.
+	sd.amount    = int(entry.get("amount", 1))
+	sd.condition = int(entry.get("condition", 100))
+	sd.position  = int(entry.get("position", 0))
+	sd.mode      = int(entry.get("mode", 1))
+	sd.zoom      = int(entry.get("zoom", 1))
 	sd.chamber   = entry.get("chamber", false)
 	sd.casing    = entry.get("casing", false)
 	sd.state     = entry.get("state", "")
