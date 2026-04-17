@@ -1,5 +1,15 @@
 # Secure Container — Changelog
 
+## v1.0.5
+
+### Bug Fixes
+- **Items lost on level transition** — secured items (notably cash from Cash System) could vanish when loading into a new scene. During a level transition the pouch item briefly unloads from its equipment slot while the new scene's inventory rebuilds, and `_poll_equipped_state` treated that transient gap as an unequip and ran the drop/return-and-delete-session path. A 45-frame grace period is now required before an empty slot is treated as a genuine unequip, and `_load_session` is called eagerly when a tier is re-detected with empty in-memory contents so session-persisted items are recovered even when the panel is never opened after the transition.
+- **Stackable amounts showed `.0` suffix** — ammo and cash displayed as `30.0` / `752.0` after a session reload because `JSON.parse_string` returns every number as a float and the amount label stringified the float directly. `_deserialize_slot_data` now coerces `amount`, `condition`, `position`, `mode`, and `zoom` back to `int`.
+
+### Features
+- **Cash System bridge** — while trading, cash stored in the pouch is mirrored into the inventory so Cash System's `CountCash` / `RemoveCash` pick it up for purchases, and proceeds reclaim to the pouch slots at trade close (leftover stays in inventory as change). Toggleable from MCM (`Integrations` → `Cash System Bridge`, default on). Death mid-trade is handled by restoring the original cash slots before the death save, so respawn recovers the pouch cash.
+- **Weapon restrictions (MCM)** — new `Restrictions` category with `Allow Weapons` (default on) and `Pistols Only` (default off). Firearms that fail the filter are rejected from both shift+click and drag-drop into any tier's pouch.
+
 ## v1.0.4
 
 ### Bug Fixes
