@@ -1,5 +1,11 @@
 # Secure Container — Changelog
 
+## v1.0.6
+
+### Changes
+
+- **Pouch textures shrunk by ~1.6 MB** (VMZ payload), no visual change. `field_pouch_tex.png` and `secure_pouch_tex.png` downscaled from 1024×1024 → 512×512 and recompressed. Both textures wrap small in-hand 3D pouch models that never sample at 1:1 during gameplay, so the visual result is indistinguishable.
+
 ## v1.0.5
 
 ### Bug Fixes
