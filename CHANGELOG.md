@@ -1,5 +1,17 @@
 # Secure Container — Changelog
 
+## v2.0.0 — MML v3.0.0 compatibility
+
+**Requires Metro Mod Loader v3.0.0 or newer.** Incompatible with earlier MML versions.
+
+### Changes
+
+- **Migrated Interface overrides from `take_over_path()` to MML's RTVModLib hook API.** The 7 methods previously overridden on the `Interface.gd` subclass (5 hover getters + `Drop` + `ContextPlace`) are now registered as replace hooks (`interface-gethoveritem`, `interface-gethovergrid`, `interface-gethoverslot`, `interface-gethoverequipment`, `interface-gethoverinfo`, `interface-drop`, `interface-contextplace`). Each hook short-circuits (calls `lib.skip_super()`) when the mouse is over the SC panel or when the dropped item is an SC pouch; otherwise passes through to vanilla.
+- Under MML v3.0.0's script-rewrite pipeline, multiple mods calling `take_over_path()` on `res://Scripts/Interface.gd` triggered the "CHAIN BROKEN" warning and broke Drop/Place for all items (vanilla and mod). The hook API is MML's officially-supported mechanism and avoids the chain entirely.
+- **Removed `mods/SecureContainer/Interface.gd`** subclass — logic migrated into Main.gd as `_hook_*` callbacks plus the existing `_drop_sc_item` / `_get_sc_pickup_scene` helpers.
+- **Removed `overrideScript()` helper** from `Main.gd`.
+- No player-facing change: SC pouch mouse-blocking, drop, context-place, contents persistence, pouch slot injection, spawner integration all behave identically.
+
 ## v1.0.6
 
 ### Changes
