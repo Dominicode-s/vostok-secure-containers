@@ -1,5 +1,16 @@
 # Secure Container — Changelog
 
+## v2.0.1 — Registry API enabled
+
+### Bug Fixes
+
+- **Pouch scenes were never registered.** `Main.gd` calls `lib.register(lib.Registry.SCENES, ...)` for the three container scenes, but `mod.txt` had no `[registry]` section. Metro Mod Loader gates the entire registry API behind that section (`has_section("registry")` in `src/mod_loading.gd`), so on 3.x loaders every `lib.register` call silently no-opped with a `push_warning` and the scenes never reached the game's scene table. Added `[registry] enabled=true`.
+
+### Changes
+
+- **Declared Mod Configuration Menu as an optional dependency** (`[dependencies] optional=["doinkoink-mcm"]` in `mod.txt`). MCM is still detected at runtime via `MCM_Helpers.tres` and the mod runs fine without it, but the declaration makes the loader mount MCM before this mod's autoload reaches `_register_mcm()`, closing a load-order race that could leave the config page unregistered.
+- No gameplay change.
+
 ## v2.0.0 — MML v3.0.0 compatibility
 
 **Requires Metro Mod Loader v3.0.0 or newer.** Incompatible with earlier MML versions.
