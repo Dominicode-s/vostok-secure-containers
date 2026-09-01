@@ -8,3 +8,9 @@ SecureContainerConfig="res://mods/SecureContainer/Config.gd"
 SecureContainer="res://mods/SecureContainer/Main.gd"
 [updates]
 modworkshop=56154
+
+[dependencies]
+optional=["doinkoink-mcm"]
+
+[registry]
+enabled=true
