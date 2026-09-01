@@ -1,5 +1,12 @@
 # Secure Container — Changelog
 
+## v2.0.2 — Pouch contents are now per-save
+
+### Bug Fixes
+
+- **Secured items leaked between save profiles.** Contents were written to a single `user://SecureContainer.json` (and `user://SecureContainer_session.json`) shared by every profile, so loading a different save showed the pouch from whichever save wrote last. Both paths are now keyed by the active Patty's Profiles profile — `SecureContainer_<profile>.json` — matching how XP & Skills keys `XPData_<profile>.cfg` and Run Summary keys its history. With no profile active the original flat paths are still used, so nothing changes for players without Patty's Profiles installed.
+- **One-time migration**: an existing pre-profile `SecureContainer.json` is handed to the first profile loaded after updating and then removed. Copying it into every profile would reproduce the bug it fixes, so it goes to one save rather than all of them. If the items land on the wrong save, they can be moved manually — the files are plain JSON in `%APPDATA%\Road to Vostok\`.
+
 ## v2.0.1 — Registry API enabled
 
 ### Bug Fixes
