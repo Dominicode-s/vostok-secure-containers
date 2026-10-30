@@ -245,7 +245,6 @@ func _register_with_database() -> void:
 		root_children.append(child.name)
 	print("[SecureContainer] /root children: ", root_children)
 
-	# Try to find the Database autoload
 	var db: Node = get_node_or_null("/root/Database")
 	print("[SecureContainer] /root/Database = ", db)
 	if not db:
@@ -296,7 +295,7 @@ func _register_with_database() -> void:
 	print("[SecureContainer] _register_with_database() done")
 
 func _process(_delta: float) -> void:
-	# Death detection — save contents before the game wipes inventory
+	# Death detection: save contents before the game wipes inventory
 	if gameData.isDead:
 		if not _was_dead:
 			# If we died mid-trade, the bridged cash is sitting in the
@@ -345,7 +344,7 @@ func _process(_delta: float) -> void:
 		_cleanup_panel()
 
 func _input(event: InputEvent) -> void:
-	# Panel drag — capture motion + release globally so fast drags that leave
+	# Panel drag: capture motion + release globally so fast drags that leave
 	# the header rect don't get stuck.
 	if _panel_dragging:
 		if event is InputEventMouseMotion:
@@ -535,12 +534,12 @@ func _poll_equipped_state(iface: Node) -> void:
 		_empty_slot_frames = 0
 
 	if found_file == _equipped_file:
-		# Same tier — reinject panel only if player had it open
+		# Same tier: reinject panel only if player had it open
 		if found_file != "" and _panel_open and not _panel_injected:
 			call_deferred("_inject_secure_panel", iface, found_file)
 		return
 
-	# If the slot just became empty while the player is mid-drag, hold off —
+	# If the slot just became empty while the player is mid-drag, hold off;
 	# don't update _equipped_file yet so we re-detect the change next frame.
 	if found_file == "" and iface.get("itemDragged") != null:
 		return
@@ -649,7 +648,7 @@ func _inject_secure_panel(iface: Node, tier_file: String) -> void:
 	_secure_panel.z_index = 10
 	iface.add_child(_secure_panel)
 
-	# Position below the Pouch slot — resolve after layout is ready next frame
+	# Position below the Pouch slot; resolve after layout is ready next frame
 	call_deferred("_position_secure_panel")
 	call_deferred("_refresh_slots")
 
@@ -750,7 +749,7 @@ func _update_drag_position(global_pos: Vector2) -> void:
 	_secure_panel.position = local
 
 # Used by Interface.gd override to null out Hover state when cursor is over our
-# panel — prevents clicks passing through to inventory items behind the panel.
+# panel; prevents clicks passing through to inventory items behind the panel.
 func _mouse_over_panel() -> bool:
 	if not _panel_injected or not _secure_panel or not is_instance_valid(_secure_panel):
 		return false
@@ -841,7 +840,6 @@ func _move_to_secure(item: Node, grid: Node, slot_index: int) -> void:
 	var sd: SlotData = SlotData.new()
 	sd.Update(item.slotData)
 
-	# Remove from inventory grid
 	var picked: Node = grid.Pick(item)
 	if not picked:
 		return
@@ -866,7 +864,7 @@ func _return_to_inventory(slot_index: int) -> void:
 	if sd.itemData.stackable:
 		placed = iface.AutoStack(sd, iface.inventoryGrid)
 	if not placed:
-		# useDrop=false — if inventory is full, leave item in pouch rather than
+		# useDrop=false: if inventory is full, leave item in pouch rather than
 		# letting AutoPlace drop it to the world (which was double-spawning it).
 		placed = iface.Create(sd, iface.inventoryGrid, false)
 
@@ -1069,7 +1067,7 @@ func _reclaim_cash_to_pouch() -> void:
 	_refresh_slots()
 
 # Serialize SlotData to JSON. Preserves attachments (nested), magazine /
-# container contents (storage), and all firearm state — without this guns lose
+# container contents (storage), and all firearm state; without this guns lose
 # their scope / grip / magazine when re-loaded.
 func _serialize_slot_data(sd: SlotData) -> Variant:
 	if sd == null or sd.itemData == null:
@@ -1249,13 +1247,13 @@ func _resolve_item_data(file_id: String) -> ItemData:
 		return null
 	if file_id in _item_data:
 		return _item_data[file_id]
-	# Database autoload — where vanilla items and most mods register
+	# Database autoload: where vanilla items and most mods register
 	var db: Node = get_node_or_null("/root/Database")
 	if db and "master" in db and db.master and "items" in db.master:
 		for item: Variant in db.master.items:
 			if item and item.file == file_id:
 				return item
-	# Loot master — Cash System (and similar mods) register their ItemData here
+	# Loot master: Cash System (and similar mods) register their ItemData here
 	# without touching Database. Without this fallback, cash secured via
 	# shift-click couldn't be re-resolved on panel reopen and vanished because
 	# its in-memory ItemData carries no resource_path.
@@ -1265,7 +1263,7 @@ func _resolve_item_data(file_id: String) -> ItemData:
 			for item: Variant in lt.items:
 				if item and item.file == file_id:
 					return item
-	# Last resort — any live Item node in the scene tree with a matching file.
+	# Last resort: any live Item node in the scene tree with a matching file.
 	# Catches items that only exist as runtime instances (no registry entry).
 	for node: Node in get_tree().get_nodes_in_group("Item"):
 		if "slotData" in node and node.slotData and node.slotData.itemData \
@@ -1436,7 +1434,7 @@ func _build_pickup_tscn(file_id: String, mesh_path: String, custom_mesh: bool) -
 	lines.append('visibility_range_end = 25.0')
 	lines.append('cast_shadow = 0')
 	if custom_mesh:
-		# Material is baked into the mesh surface — no override needed
+		# Material is baked into the mesh surface; no override needed
 		lines.append('mesh = ExtResource("5")')
 	else:
 		lines.append('mesh = SubResource("BoxMesh_1")')
@@ -1456,7 +1454,7 @@ func _parse_obj(path: String) -> ArrayMesh:
 	var v: Array = []
 	var vt: Array = []
 	var vn: Array = []
-	# Single surface — all usemtl groups merged so surface_material_override/0 covers everything
+	# Single surface: all usemtl groups merged so surface_material_override/0 covers everything
 	var surfs: Array = [[]]
 	while not file.eof_reached():
 		var line: String = file.get_line().strip_edges()
