@@ -6,7 +6,6 @@ const CONFIG_FILE: String = FILE_PATH + "config.ini"
 
 var _config: ConfigFile = ConfigFile.new()
 
-# ── Exposed values (read by Main.gd) ─────────────────────────────────────────
 var open_button: int        = MOUSE_BUTTON_MIDDLE
 var open_button_type: String = "MouseButton"
 var drop_on_unequip: bool   = true
@@ -17,8 +16,6 @@ var spawn_in_loot: bool     = true
 var allow_weapons: bool     = true
 var weapons_pistol_only: bool = false
 var cash_bridge: bool       = true
-
-# ── Init ──────────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
 	Engine.set_meta("SecureContainerConfig", self)
@@ -36,7 +33,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Keycode", "open_button", {
 		"name":         "Open Button",
-		"tooltip":      "Mouse button or key used to open and close the secure container panel.",
+		"tooltip":      "Button to open/close the secure panel",
 		"category":     "Behaviour",
 		"menu_pos":     1,
 		"default":      MOUSE_BUTTON_MIDDLE,
@@ -47,7 +44,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Bool", "drop_on_unequip", {
 		"name":     "Drop Items on Unequip",
-		"tooltip":  "When the container is moved out of the equipment slot, drop secured items on the ground. If disabled, items are returned to inventory instead.",
+		"tooltip":  "Drop items on ground when unequipped, else return to inventory",
 		"category": "Behaviour",
 		"menu_pos": 2,
 		"default":  true,
@@ -56,7 +53,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Int", "slots_small", {
 		"name":     "Field Pouch Slots",
-		"tooltip":  "Number of item slots in the Field Pouch (Common tier).",
+		"tooltip":  "Slot count for Field Pouch (Common tier)",
 		"category": "Container Sizes",
 		"menu_pos": 1,
 		"default":  2,
@@ -67,7 +64,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Int", "slots_medium", {
 		"name":     "Secure Pouch Slots",
-		"tooltip":  "Number of item slots in the Secure Pouch (Rare tier).",
+		"tooltip":  "Slot count for Secure Pouch (Rare tier)",
 		"category": "Container Sizes",
 		"menu_pos": 2,
 		"default":  4,
@@ -78,7 +75,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Int", "slots_large", {
 		"name":     "Secure Case Slots",
-		"tooltip":  "Number of item slots in the Secure Case (Legendary tier).",
+		"tooltip":  "Slot count for Secure Case (Legendary tier)",
 		"category": "Container Sizes",
 		"menu_pos": 3,
 		"default":  6,
@@ -89,7 +86,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Bool", "allow_weapons", {
 		"name":     "Allow Weapons",
-		"tooltip":  "Allow firearms to be placed inside the container. Disable to restrict the pouch to ammo, meds, cash, and similar items.",
+		"tooltip":  "Allow firearms in the pouch",
 		"category": "Restrictions",
 		"menu_pos": 1,
 		"default":  true,
@@ -98,7 +95,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Bool", "weapons_pistol_only", {
 		"name":     "Pistols Only",
-		"tooltip":  "When weapons are allowed, restrict them to pistols only. Rifles, shotguns, and SMGs will be rejected.",
+		"tooltip":  "Restrict weapons to pistols; rifles/shotguns/SMGs rejected",
 		"category": "Restrictions",
 		"menu_pos": 2,
 		"default":  false,
@@ -107,7 +104,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Bool", "cash_bridge", {
 		"name":     "Cash System Bridge",
-		"tooltip":  "When trading, treat cash stored in the pouch as spendable. Sell proceeds refill the pouch afterwards. Requires Cash System mod. NOTE: cash in transit is briefly held in inventory while trading — it is unprotected from death during that window.",
+		"tooltip":  "Pouch cash spendable during trades; proceeds refill pouch. Cash in transit is unprotected from death.",
 		"category": "Integrations",
 		"menu_pos": 1,
 		"default":  true,
@@ -116,7 +113,7 @@ func _build_defaults() -> void:
 
 	_config.set_value("Bool", "spawn_in_loot", {
 		"name":     "Spawn in Loot",
-		"tooltip":  "Allow secure containers to appear in world loot pools.",
+		"tooltip":  "Allow pouches to appear in world loot pools",
 		"category": "Loot",
 		"menu_pos": 1,
 		"default":  true,

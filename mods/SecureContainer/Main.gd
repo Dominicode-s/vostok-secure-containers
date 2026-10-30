@@ -1,13 +1,10 @@
 extends Node
 
-# ── Signals ──────────────────────────────────────────────────────────────────
 signal item_secured(slot_data)
 signal item_removed(slot_data)
 signal container_restored(items: Array)
 signal pouch_equipped(tier: String)
 signal pouch_unequipped()
-
-# ── Tier definitions ──────────────────────────────────────────────────────────
 const TIERS: Dictionary = {
 	"SecurePouch_S": {
 		"name": "Field Pouch",
@@ -54,7 +51,6 @@ const TIERS: Dictionary = {
 const SAVE_FILE: String = "user://SecureContainer.json"
 const SESSION_FILE: String = "user://SecureContainer_session.json"
 
-# ── State ─────────────────────────────────────────────────────────────────────
 var gameData = preload("res://Resources/GameData.tres")
 
 var _item_data: Dictionary = {}          # file_id -> ItemData
@@ -64,21 +60,22 @@ var _interface: Node = null
 var _was_dead: bool = false
 var _last_scene: String = ""
 
-# UI nodes (injected at runtime)
-var _pouch_slot: Control = null          # The injected equipment slot panel
-var _secure_panel: Control = null        # The secure contents panel
+# UI nodes injected at runtime
+var _pouch_slot: Control = null          # equipment slot panel
+var _secure_panel: Control = null        # secure contents panel
 var _slot_grid: Control = null           # GridContainer inside _secure_panel
 var _slot_injected: bool = false
 var _panel_injected: bool = false
 var _panel_open: bool = false     # player must double-click the pouch to open
 var _in_transition: bool = false  # true after scene change until pouch confirmed back in slot
-# Grace period — level transitions briefly null the pouch item before the new
-# scene's inventory rebuilds. Without this buffer the unequip-drop path would
-# fire and wipe stored items (reports of 5000€ cash vanishing on transition).
+
+# Level transitions briefly null the pouch item before the new scene's inventory
+# rebuilds. Without this buffer the unequip-drop path would fire and wipe stored
+# items (reports of 5000 cash vanishing on transition).
 const EMPTY_SLOT_GRACE_FRAMES: int = 45
 var _empty_slot_frames: int = 0
 
-# Panel drag/position state
+# Panel drag / position state
 var _panel_position: Vector2 = Vector2.ZERO
 var _has_custom_position: bool = false
 var _panel_dragging: bool = false
@@ -89,14 +86,12 @@ var _equipped_file: String = ""          # Which tier is equipped ("" = none)
 var _contents: Array = []               # Array of SlotData or null per slot
 var _pending_equip_tier: String = ""    # Tier to re-equip after respawn
 
-# Cash System bridge — while trading, pouch cash is moved into inventory so
-# CashMain's CountCash/RemoveCash pick it up for purchases. Reclaimed at trade
-# close, with any profit stacking onto the pouch slots first.
+# Cash System bridge: move pouch cash into inventory during trade so CashMain's
+# CountCash / RemoveCash picks it up. Reclaimed at trade close, profit stacks
+# onto pouch slots first.
 var _was_trading: bool = false
 var _trade_bridge_amount: int = 0
 var _bridged_cash_slots: Array[int] = []   # pouch indices that held cash
-
-# ── Config Helper ────────────────────────────────────────────────────────────
 
 func _cfg() -> Node:
 	return Engine.get_meta("SecureContainerConfig", null)
@@ -113,7 +108,7 @@ func _slot_count(tier_file: String) -> int:
 func _cols_for(slot_count: int) -> int:
 	return 3 if slot_count > 4 else 2
 
-# Called by Config.gd when the player saves MCM changes
+# Called by Config.gd when MCM settings change
 func _on_config_changed() -> void:
 	# Rebuild panel if open so slot count / layout updates immediately
 	if _panel_injected and _equipped_file != "":
@@ -121,8 +116,6 @@ func _on_config_changed() -> void:
 		_cleanup_panel()
 		if iface:
 			_inject_secure_panel(iface, _equipped_file)
-
-# ── Initialization ────────────────────────────────────────────────────────────
 
 func _ready() -> void:
 	Engine.set_meta("SecureContainer", self)
@@ -180,7 +173,7 @@ func _create_item_data() -> void:
 
 		var item_path: String = "user://SC_Item_%s.tres" % file_id
 		ResourceSaver.save(item, item_path)
-		# Reload from disk so resource_path is set — without this, Character.tres
+		# Reload from disk so resource_path is set; without this Character.tres
 		# saves a broken reference and logs "File not found: {item.name}" on load.
 		var loaded: ItemData = ResourceLoader.load(item_path, "", ResourceLoader.CACHE_MODE_REPLACE)
 		_item_data[file_id] = loaded if loaded else item
@@ -229,7 +222,7 @@ func _inject_into_loot_pool() -> void:
 		return
 	var lt: Resource = load("res://Loot/LT_Master.tres")
 	if not lt:
-		print("[SecureContainer] Could not load LT_Master — pouches won't spawn in loot")
+		print("[SecureContainer] Could not load LT_Master - pouches won't spawn in loot")
 		return
 	for file_id: String in _item_data:
 		var item: ItemData = _item_data[file_id]
@@ -256,7 +249,7 @@ func _register_with_database() -> void:
 	var db: Node = get_node_or_null("/root/Database")
 	print("[SecureContainer] /root/Database = ", db)
 	if not db:
-		print("[SecureContainer] ERROR: Database autoload not found — spawner integration skipped")
+		print("[SecureContainer] ERROR: Database autoload not found - spawner integration skipped")
 		return
 
 	print("[SecureContainer] Database properties: ", db.get_property_list().map(func(p): return p.name))
@@ -301,8 +294,6 @@ func _register_with_database() -> void:
 		print("[SecureContainer] Called forceRefresh() on ItemSpawner")
 
 	print("[SecureContainer] _register_with_database() done")
-
-# ── Process ───────────────────────────────────────────────────────────────────
 
 func _process(_delta: float) -> void:
 	# Death detection — save contents before the game wipes inventory
@@ -353,8 +344,6 @@ func _process(_delta: float) -> void:
 	else:
 		_cleanup_panel()
 
-# ── Input — shift+click or drag-and-drop to secure ───────────────────────────
-
 func _input(event: InputEvent) -> void:
 	# Panel drag — capture motion + release globally so fast drags that leave
 	# the header rect don't get stuck.
@@ -379,7 +368,7 @@ func _input(event: InputEvent) -> void:
 	if not iface:
 		return
 
-	# Configured button on the equipped pouch item — toggle the panel open/closed
+	# Configured button on the equipped pouch item: toggle the panel open/closed
 	var cfg: Node = _cfg()
 	var open_btn: int = cfg.open_button if cfg else MOUSE_BUTTON_MIDDLE
 	var open_btn_type: String = cfg.open_button_type if cfg else "MouseButton"
@@ -390,7 +379,7 @@ func _input(event: InputEvent) -> void:
 		if _pouch_slot and is_instance_valid(_pouch_slot):
 			if _pouch_slot.get_global_rect().has_point(mbe.global_position):
 				# Panel can't be opened while the cash bridge has pouch cash
-				# in inventory — the slots are emptied pending reclaim.
+				# in inventory: the slots are emptied pending reclaim.
 				if _was_trading and _trade_bridge_amount > 0:
 					get_viewport().set_input_as_handled()
 					return
@@ -434,8 +423,6 @@ func _input(event: InputEvent) -> void:
 			_move_to_secure(hover_item, hover_grid, i)
 			get_viewport().set_input_as_handled()
 			return
-
-# ── Equipment Slot Injection ──────────────────────────────────────────────────
 
 func _inject_pouch_slot(iface: Node) -> void:
 	if _slot_injected:
@@ -533,8 +520,6 @@ func _scan_for_slots(node: Node) -> Node:
 			return result
 	return null
 
-# ── Secure Panel UI ───────────────────────────────────────────────────────────
-
 func _poll_equipped_state(iface: Node) -> void:
 	if not _pouch_slot or not is_instance_valid(_pouch_slot):
 		return
@@ -546,7 +531,7 @@ func _poll_equipped_state(iface: Node) -> void:
 			break
 
 	if found_file != "":
-		_in_transition = false  # Pouch confirmed in slot — scene is stable
+		_in_transition = false  # Pouch confirmed in slot; scene is stable
 		_empty_slot_frames = 0
 
 	if found_file == _equipped_file:
@@ -560,14 +545,14 @@ func _poll_equipped_state(iface: Node) -> void:
 	if found_file == "" and iface.get("itemDragged") != null:
 		return
 
-	# Grace period — ignore transient empty-slot readings caused by level
+	# Grace period: ignore transient empty-slot readings caused by level
 	# transitions or inventory reloads. Only act on a sustained empty slot.
 	if found_file == "" and _equipped_file != "":
 		_empty_slot_frames += 1
 		if _empty_slot_frames < EMPTY_SLOT_GRACE_FRAMES:
 			return
 
-	# Tier changed — full reset
+	# Tier changed: full reset
 	_equipped_file = found_file
 	_cleanup_panel()
 
@@ -575,17 +560,17 @@ func _poll_equipped_state(iface: Node) -> void:
 		var slot_count: int = _slot_count(found_file)
 		if _contents.size() != slot_count:
 			_contents.resize(slot_count)
-		# Eagerly load session contents — covers the case where the pouch was
+		# Eagerly load session contents: covers the case where the pouch was
 		# re-equipped via level transition and the player hasn't opened the
 		# panel yet. Without this, _load_session is deferred until panel open
 		# and any unequip path in between would drop/lose items.
 		if _contents.filter(func(s: Variant) -> bool: return s != null).is_empty():
 			_load_session()
-		# Don't auto-open — wait for player middle-click
+		# Don't auto-open; wait for player middle-click
 		emit_signal("pouch_equipped", found_file)
 	else:
 		if _in_transition or _pending_equip_tier != "":
-			# Slot is empty after scene change or pending re-equip — preserve contents
+			# Slot is empty after scene change or pending re-equip: preserve contents
 			return
 		_panel_open = false
 		var drop_cfg: Node = _cfg()
@@ -625,7 +610,6 @@ func _inject_secure_panel(iface: Node, tier_file: String) -> void:
 	var vbox: VBoxContainer = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 6)
 
-	# Draggable header — click and drag to move the panel anywhere on screen.
 	var header: Panel = Panel.new()
 	header.custom_minimum_size = Vector2(0, 18)
 	header.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -817,8 +801,6 @@ func _cleanup_panel() -> void:
 	_slot_grid = null
 	_panel_injected = false
 
-# ── Item Transfer ─────────────────────────────────────────────────────────────
-
 func _is_item_allowed(item_data: ItemData) -> bool:
 	if item_data == null:
 		return false
@@ -895,7 +877,7 @@ func _return_to_inventory(slot_index: int) -> void:
 		emit_signal("item_removed", sd)
 		print("[SecureContainer] Returned: %s" % sd.itemData.name)
 	else:
-		print("[SecureContainer] Inventory full — can't return %s" % sd.itemData.name)
+		print("[SecureContainer] Inventory full - can't return %s" % sd.itemData.name)
 
 func _return_all_to_inventory() -> void:
 	var iface: Node = _get_interface()
@@ -912,10 +894,8 @@ func _return_all_to_inventory() -> void:
 		if not placed:
 			placed = iface.Create(sd, iface.inventoryGrid, false)
 		if not placed:
-			# Inventory full — drop this one
+			# Inventory full: drop this one
 			_drop_single_to_world(sd)
-
-# ── Drop Contents to World ────────────────────────────────────────────────────
 
 func _drop_contents_to_world() -> void:
 	for sd: SlotData in _contents:
@@ -945,7 +925,7 @@ func _drop_single_to_world(sd: SlotData) -> void:
 	if not scene and db:
 		scene = db.get(sd.itemData.file)
 	if not scene:
-		push_warning("[SecureContainer] No pickup scene for %s — skipping drop" % sd.itemData.file)
+		push_warning("[SecureContainer] No pickup scene for %s - skipping drop" % sd.itemData.file)
 		return
 
 	var pickup: Node = scene.instantiate()
@@ -960,23 +940,13 @@ func _drop_single_to_world(sd: SlotData) -> void:
 		pickup.Unfreeze()
 	pickup.linear_velocity = (base_dir + spread.normalized() * 0.3) * 2.0
 
-# ── Cash System Bridge ───────────────────────────────────────────────────────
-#
-# Goal: pouch cash should count as spendable while trading, and sale proceeds
-# should refill the pouch (so a pouch-carried wallet acts like your wallet).
-#
-# Approach: at trade open we move the pouch cash amount into inventory via
-# CashMain.AddCash — the cash slots in _contents are nulled and their indices
-# cached. CashMain then sees the total for buying. The panel is forced closed
-# so empty cash slots can't be back-filled with other items mid-trade. On
-# trade close we pull inventory cash back into the cached slots (up to each
-# slot's maxAmount); anything left over stays in inventory as profit / change.
+# Cash System Bridge: move pouch cash into inventory during trade so it counts
+# as spendable. Sale proceeds refill the pouch. At trade close, pull cash back
+# into cached slots; anything left over stays in inventory as profit / change.
 #
 # Death safety: if the player dies mid-trade, _process sees isDead and calls
 # _restore_bridged_cash_in_memory before _save_contents so the death-save
-# file has the original cash slots populated again. The inventory mirror is
-# wiped by the vanilla death path (same behaviour as any inventory cash).
-
+# file has the original cash slots populated again.
 const CASH_FILE: String = "Cash"
 
 func _update_cash_bridge() -> void:
@@ -1098,11 +1068,9 @@ func _reclaim_cash_to_pouch() -> void:
 	_save_session()
 	_refresh_slots()
 
-# ── Session Persistence (survives scene changes and main menu) ────────────────
-
-# Serialize a SlotData to a JSON-safe dict. Preserves attachments (nested),
-# magazine/container contents (storage), and all firearm state — without this
-# guns lose their scope/grip/magazine when secured then re-loaded.
+# Serialize SlotData to JSON. Preserves attachments (nested), magazine /
+# container contents (storage), and all firearm state — without this guns lose
+# their scope / grip / magazine when re-loaded.
 func _serialize_slot_data(sd: SlotData) -> Variant:
 	if sd == null or sd.itemData == null:
 		return null
@@ -1191,7 +1159,7 @@ func _load_session() -> void:
 	if not parsed or not (parsed is Dictionary):
 		return
 	if parsed.get("tier", "") != _equipped_file:
-		return  # Session is for a different tier — ignore
+		return  # Session is for a different tier: ignore
 	if "panel_pos" in parsed:
 		var arr: Array = parsed.panel_pos
 		if arr.size() == 2:
@@ -1206,8 +1174,6 @@ func _load_session() -> void:
 func _delete_session() -> void:
 	if FileAccess.file_exists(SESSION_FILE):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(SESSION_FILE))
-
-# ── Death Persistence ─────────────────────────────────────────────────────────
 
 func _save_contents() -> void:
 	var non_null: Array = _contents.filter(func(s: Variant) -> bool: return s != null)
@@ -1230,7 +1196,7 @@ func _save_contents() -> void:
 
 func _check_restore() -> void:
 	if FileAccess.file_exists(SAVE_FILE):
-		print("[SecureContainer] Restore file found — will restore on next scene load")
+		print("[SecureContainer] Restore file found - will restore on next scene load")
 
 func _try_restore() -> void:
 	if not FileAccess.file_exists(SAVE_FILE):
@@ -1307,8 +1273,6 @@ func _resolve_item_data(file_id: String) -> ItemData:
 			return node.slotData.itemData
 	return null
 
-# ── Script Override ───────────────────────────────────────────────────────────
-
 func overrideScript(path: String) -> void:
 	var script: Script = load(path)
 	if not script:
@@ -1334,8 +1298,6 @@ func overrideScript(path: String) -> void:
 	script.take_over_path(target_path)
 	print("[SecureContainer] Overrode: " + target_path)
 
-# ── Interface Helper ──────────────────────────────────────────────────────────
-
 func _get_interface() -> Node:
 	if _interface and is_instance_valid(_interface):
 		return _interface
@@ -1344,8 +1306,6 @@ func _get_interface() -> Node:
 		return null
 	_interface = scene.get_node_or_null("/root/Map/Core/UI/Interface")
 	return _interface
-
-# ── Asset Helpers ─────────────────────────────────────────────────────────────
 
 func _mod_file_path(filename: String) -> String:
 	var res_path: String = "res://mods/SecureContainer/" + filename
@@ -1488,8 +1448,6 @@ func _build_pickup_tscn(file_id: String, mesh_path: String, custom_mesh: bool) -
 	lines.append('shape = SubResource("BoxShape_1")')
 	lines.append('')
 	return "\n".join(lines)
-
-# ── OBJ Parser (same as CashSystem) ──────────────────────────────────────────
 
 func _parse_obj(path: String) -> ArrayMesh:
 	var file: FileAccess = FileAccess.open(path, FileAccess.READ)
